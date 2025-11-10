@@ -416,3 +416,62 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+"" 
+"# ============================================================================" 
+"# MQL4/MQL5 - MetaTrader specific files (ADDED FOR TRADING PROJECTS)" 
+"# ============================================================================" 
+"" 
+"# Compiled files" 
+"*.ex4" 
+"*.ex5" 
+"" 
+"# Log files and historical data" 
+"*.log" 
+"*.hst" 
+"*.dat" 
+"" 
+"# Temporary files" 
+"*.tmp" 
+"*.cache" 
+
+# ============================================================================
+# MQL4/MQL5 - MetaTrader specific files (ADDED FOR TRADING PROJECTS)
+# ============================================================================
+
+# Compiled files
+*.ex4
+*.ex5
+
+# Source files (OPCIONAL - comenta si quieres versionar los .mq4)
+# *.mq4
+# *.mq5
+
+# Include files (OPCIONAL - comenta si quieres versionar los .mqh)
+# *.mqh
+
+# Log files and historical data
+*.log
+*.hst
+*.dat
+*.fxt
+*.csv
+
+# Temporary files
+*.tmp
+*.cache
+*.dll
+
+# Backup files
+*.bak
+*.backup
+*_backup.mq4
+*_backup.mqh
+
+# Configuration files (may contain sensitive data)
+*.set
+*.ini
+
+# Tester and backtest files
+tester/
+backtest/
+*.tlb
