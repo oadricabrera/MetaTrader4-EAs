@@ -160,6 +160,16 @@ void OnTimer()
    double equityPercent = (balance > 0) ? (equity / balance) * 100.0 : 100.0;
    double spread = GetSpreadForXAUUSD();
    
+   // 🆕 NUEVO: Verificación de recalibración por distancia ≥10%
+   if(ModoProteccionActivado && (equityPercent - UltimoEscalon) >= 10.0)
+   {
+      PisoActual = equityPercent;
+      UltimoEscalon = equityPercent;
+      
+      Print("🔄 RECALIBRACIÓN COMPLETA por distancia ≥10% - Nuevo piso: " + 
+            DoubleToString(PisoActual, 1) + "%");
+   }
+   
    MonitoreoPrincipal(equityPercent, spread);
    
    // 🆕 VERIFICACIÓN CONTINUA DE RECUPERACIÓN
@@ -179,6 +189,16 @@ void OnTick()
    double spread = GetSpreadForXAUUSD();
    CurrentOpenPositions = CountOpenPositions();
    
+   // 🆕 NUEVO: Verificación de recalibración por distancia ≥10%
+   if(ModoProteccionActivado && (equityPercent - UltimoEscalon) >= 10.0)
+   {
+      PisoActual = equityPercent;
+      UltimoEscalon = equityPercent;
+      
+      Print("🔄 RECALIBRACIÓN COMPLETA por distancia ≥10% - Nuevo piso: " + 
+            DoubleToString(PisoActual, 1) + "%");
+   }
+   
    MonitoreoPrincipal(equityPercent, spread);
    
    // 🆕 VERIFICACIÓN CONTINUA DE RECUPERACIÓN
@@ -188,7 +208,7 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Verificación continua de recuperación de equity (NUEVA)         |
+//| Verificación continua de recuperación de equity                 |
 //+------------------------------------------------------------------+
 void VerificarRecuperacionEquity(double equityPercent)
 {
@@ -382,7 +402,7 @@ void ManageProtectionMode(double equityPercent)
       }
    }
    
-   // MODIFICACIÓN 1: Lógica de nuevas coberturas escalonadas CON ESCALONAMIENTO EXACTO
+   // Lógica de nuevas coberturas escalonadas CON ESCALONAMIENTO EXACTO
    if(equityPercent <= UltimoEscalon - 1.0)
    {
       if(AbrirCoberturaConReintentos())
@@ -589,7 +609,7 @@ void ResetearEpisodio()
    EpisodioDireccion = -1;
    EpisodioLoteBase = 0.0;
    EpisodioUltimoEscalon = 0.0;
-   EpisodioPisoActual = 0.0;  // 🆕 NUEVA LÍNEA
+   EpisodioPisoActual = 0.0;
    EpisodioInicio = 0;
    
    // 🆕 RESET COMPLETO DE VARIABLES DE ESCALONAMIENTO
@@ -602,14 +622,16 @@ void ResetearEpisodio()
    InWaitingState = false;
    TimerStart = 0;
    
-   BloqueoPorCierre = false; // 🆕 RESETEAR BLOQUEO
-   UltimoCierreTendencia = 0; // 🆕 RESETEAR PERÍODO REFLEXIÓN
+   BloqueoPorCierre = false;
+   UltimoCierreTendencia = 0;
    
    GlobalVariableSet("Protector_EpisodioDireccion", -1);
    GlobalVariableSet("Protector_EpisodioLoteBase", 0.0);
    GlobalVariableSet("Protector_EpisodioUltimoEscalon", 0.0);
-   GlobalVariableSet("Protector_EpisodioPisoActual", 0.0);  // 🆕 NUEVA LÍNEA
+   GlobalVariableSet("Protector_EpisodioPisoActual", 0.0);
    GlobalVariableSet("Protector_EpisodioInicio", 0);
+   
+   Print("🔄 Episodio de protección COMPLETAMENTE reseteado - Listo para nuevo ciclo");
 }
 
 //+------------------------------------------------------------------+
