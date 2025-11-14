@@ -73,6 +73,10 @@ double         EpisodioUltimoEscalon = 0.0;
 double         EpisodioPisoActual = 0.0;  // 🆕 NUEVA VARIABLE PARA PISO RECALIBRADO
 datetime       EpisodioInicio = 0;
 
+// Variables de detección única
+bool           DireccionDetectada = false;
+datetime       TiempoDeteccion = 0;
+
 // NUEVA VARIABLE PARA DRAWDOWN
 datetime       TiempoInicioDrawdown = 0;
 
@@ -176,11 +180,11 @@ void OnTimer()
    VerificarRecuperacionEquity(equityPercent);
    
    UpdateAllChartsPanels(equityPercent, spread);
+   
+   // 🆕 AGREGAR ESTA LÍNEA AL FINAL
+   GestionarResetDeteccion();
 }
 
-//+------------------------------------------------------------------+
-//| Función principal de tick                                        |
-//+------------------------------------------------------------------+
 void OnTick()
 {
    double equity = AccountEquity();
@@ -205,6 +209,9 @@ void OnTick()
    VerificarRecuperacionEquity(equityPercent);
    
    UpdateAllChartsPanels(equityPercent, spread);
+   
+   // 🆕 AGREGAR ESTA LÍNEA AL FINAL
+   GestionarResetDeteccion();
 }
 
 //+------------------------------------------------------------------+
@@ -242,11 +249,12 @@ void MonitoreoPrincipal(double equityPercent, double spread)
       ManageProtectionMode(equityPercent);
 }
 
-//+------------------------------------------------------------------+
-//| Verificar condiciones de activación (MODIFICADA)                |
-//+------------------------------------------------------------------+
 void CheckActivationConditions(double equityPercent)
 {
+   // ✅ NO ACTIVAR SI YA ESTAMOS EN PROTECCIÓN
+   if(ModoProteccionActivado)
+      return;
+   
    // 🆕 COMPORTAMIENTO ROBUSTO DEL TEMPORIZADOR
    if(InWaitingState)
    {
@@ -301,16 +309,27 @@ bool IsXAUUSDChartOpen()
    return (chartsFound > 0);
 }
 
-//+------------------------------------------------------------------+
-//| Activar modo protección                                          |
-//+------------------------------------------------------------------+
 void ActivarModoProteccion()
 {
-   // 1. Detectar dirección del EA principal
-   if(!DetectarDireccionEAPrincipal())
+   // ✅ BLOQUEO: Si ya está activo, NO HACER NADA
+   if(ModoProteccionActivado) 
    {
-      Print("Error: No se pudo detectar la dirección del EA principal");
+      Print("🔒 Activación bloqueada - Ya en modo protección");
       return;
+   }
+
+   // ✅ DETECTAR DIRECCIÓN (solo si no está detectada)
+   if(!DireccionDetectada)
+   {
+      if(!DetectarDireccionEAPrincipal())
+      {
+         Print("Error: No se pudo detectar la dirección del EA principal");
+         return;
+      }
+   }
+   else
+   {
+      Print("🔒 Reactivación usando dirección existente: " + string(DireccionEAPrincipal == OP_BUY ? "BUY" : "SELL"));
    }
    
    // 2. Cerrar gráfico XAUUSD con reintentos (solo si está abierto)
@@ -698,6 +717,13 @@ void LoadPersistentData()
    if(GlobalVariableCheck("Protector_EpisodioInicio"))
       EpisodioInicio = (datetime)GlobalVariableGet("Protector_EpisodioInicio");
       
+   // 🆕 CARGAR DATOS DE DETECCIÓN ÚNICA
+   if(GlobalVariableCheck("Protector_DireccionDetectada"))
+      DireccionDetectada = (bool)GlobalVariableGet("Protector_DireccionDetectada");
+   
+   if(GlobalVariableCheck("Protector_TiempoDeteccion"))
+      TiempoDeteccion = (datetime)GlobalVariableGet("Protector_TiempoDeteccion");
+      
    // Restaurar modo protección si estaba activo
    if(EpisodioDireccion != -1 && EpisodioInicio > 0)
    {
@@ -707,6 +733,16 @@ void LoadPersistentData()
       UltimoEscalon = EpisodioUltimoEscalon;
       PisoActual = EpisodioPisoActual;  // 🆕 RESTAURAR PISO ACTUAL
       Print("Modo protección restaurado desde datos persistentes - Piso: " + DoubleToString(PisoActual, 2) + "%");
+   }
+   
+   // ✅ VERIFICAR INTEGRIDAD AL CARGAR DATOS
+   if(ModoProteccionActivado && DireccionDetectada)
+   {
+      if(DireccionEAPrincipal != EpisodioDireccion)
+      {
+         Print("⚠️  Corrigiendo inconsistencia en datos persistentes");
+         DireccionEAPrincipal = EpisodioDireccion;
+      }
    }
 }
 
@@ -734,6 +770,10 @@ void SavePersistentData()
       GlobalVariableSet("Protector_EpisodioPisoActual", EpisodioPisoActual);
       GlobalVariableSet("Protector_EpisodioInicio", EpisodioInicio);
    }
+   
+   // 🆕 GUARDAR DATOS DE DETECCIÓN ÚNICA
+   GlobalVariableSet("Protector_DireccionDetectada", DireccionDetectada);
+   GlobalVariableSet("Protector_TiempoDeteccion", TiempoDeteccion);
 }
 
 //+------------------------------------------------------------------+
@@ -791,10 +831,66 @@ string GetTradingSymbol()
    return "XAUUSD";
 }
 
-//+------------------------------------------------------------------+
-//| Detectar dirección del EA principal (SIMPLIFICADA)               |
-//+------------------------------------------------------------------+
 bool DetectarDireccionEAPrincipal()
+{
+   // ✅ SI YA SE DETECTÓ, NO VOLVER A DETECTAR
+   if(DireccionDetectada)
+   {
+      Print("🔒 Dirección ya detectada - No redetectar");
+      return (DireccionEAPrincipal == OP_BUY || DireccionEAPrincipal == OP_SELL);
+   }
+
+   int buysPrincipal = 0;
+   int sellsPrincipal = 0;
+   
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      if(OrderSelect(i, SELECT_BY_POS)) {
+         string orderSymbol = OrderSymbol();
+         if(NormalizeSymbol(orderSymbol) == SymbolXAU)
+         {
+            // ✅ EXCLUIR ÓRDENES DEL PARAGUAS
+            if(OrderMagicNumber() == Magic_Number) continue;
+            if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
+            
+            if(OrderType() == OP_BUY) 
+               buysPrincipal++;
+            else if(OrderType() == OP_SELL) 
+               sellsPrincipal++;
+         }
+      }
+   }
+   
+   // ✅ LÓGICA DE DECISIÓN
+   if(buysPrincipal > 0 && sellsPrincipal == 0)
+   {
+      DireccionEAPrincipal = OP_BUY;
+      DireccionDetectada = true;
+      TiempoDeteccion = TimeCurrent();
+      Print("✅ Dirección detectada: BUY (" + IntegerToString(buysPrincipal) + " posiciones) - " + TimeToString(TiempoDeteccion));
+      return true;
+   }
+   else if(sellsPrincipal > 0 && buysPrincipal == 0)
+   {
+      DireccionEAPrincipal = OP_SELL;
+      DireccionDetectada = true;
+      TiempoDeteccion = TimeCurrent();
+      Print("✅ Dirección detectada: SELL (" + IntegerToString(sellsPrincipal) + " posiciones) - " + TimeToString(TiempoDeteccion));
+      return true;
+   }
+   else if(buysPrincipal > 0 && sellsPrincipal > 0)
+   {
+      Print("🚨 ERROR: EA principal tiene operaciones mezcladas");
+      return false;
+   }
+   else
+   {
+      Print("⚠️  No se detectaron operaciones del EA principal");
+      return false;
+   }
+}
+
+bool DebeResetearDeteccion()
 {
    for(int i = OrdersTotal()-1; i >= 0; i--)
    {
@@ -802,23 +898,30 @@ bool DetectarDireccionEAPrincipal()
          string orderSymbol = OrderSymbol();
          if(NormalizeSymbol(orderSymbol) == SymbolXAU)
          {
-            if(OrderType() == OP_BUY)
-            {
-               DireccionEAPrincipal = OP_BUY;
-               return true;
-            }
-            else if(OrderType() == OP_SELL)
-            {
-               DireccionEAPrincipal = OP_SELL;
-               return true;
-            }
+            // Excluir órdenes del paraguas
+            if(OrderMagicNumber() == Magic_Number) continue;
+            if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
+            
+            // Si encuentra alguna orden del EA principal, NO resetear
+            return false;
          }
       }
    }
-   
-   Print("Advertencia: No hay posiciones abiertas del EA principal");
-   return false;
+   // No se encontraron órdenes del EA principal → SÍ resetear
+   return true;
 }
+
+void GestionarResetDeteccion()
+{
+   if(DireccionDetectada && DebeResetearDeteccion())
+   {
+      DireccionDetectada = false;
+      DireccionEAPrincipal = -1;
+      Print("🔄 Reset detección - EA principal sin posiciones");
+   }
+}
+
+// Llamar esta función en OnTick() y OnTimer()
 
 //+------------------------------------------------------------------+
 //| Calcular lote híbrido adaptativo (CORREGIDA)                    |
@@ -1175,7 +1278,12 @@ void DesactivarModoProteccion()
 {
    ModoProteccionActivado = false;
    GraficoCerrado = false;
-   ResetearEpisodio();
+   
+   // Resetear variables del episodio, pero NO la detección de dirección
+   EpisodioLoteBase = 0.0;
+   EpisodioUltimoEscalon = 0.0;
+   EpisodioPisoActual = 0.0;
+   EpisodioInicio = 0;
    
    string mensaje = StringFormat("MODO PROTECCIÓN DESACTIVADO - Equity: $%.2f (%.1f%%)", 
                                 AccountEquity(), (AccountEquity()/AccountBalance())*100);
