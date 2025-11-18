@@ -923,21 +923,19 @@ void GestionarResetDeteccion()
 
 // Llamar esta función en OnTick() y OnTimer()
 
-// NUEVO (solo posiciones):
 void CalcularLoteInicial()
 {
-   int totalPosiciones = CountOpenPositions();
+   int totalPosicionesEA = CountOpenPositionsEAPrincipal();  // ← NUEVA FUNCIÓN SOLO EA PRINCIPAL
    
-   double loteCalculado = totalPosiciones * FactorPosiciones;
+   double loteCalculado = totalPosicionesEA * FactorPosiciones;
    
-   // APLICAR LÍMITES
    loteCalculado = MathMin(loteCalculado, LoteMaximo);
    loteCalculado = MathMax(loteCalculado, LoteMinimo);
    
    LoteFijo = NormalizeDouble(loteCalculado, 2);
    
-   Print(StringFormat("Lote calculado: %.3f (solo por posiciones: %d * %.3f)", 
-                     LoteFijo, totalPosiciones, FactorPosiciones));
+   Print(StringFormat("Lote calculado: %.3f (solo por posiciones EA Principal: %d × %.3f)", 
+                     LoteFijo, totalPosicionesEA, FactorPosiciones));
 }
 
 //+------------------------------------------------------------------+
@@ -962,6 +960,26 @@ double AjustarLotePorMargen(double lote)
    }
    
    return NormalizeDouble(loteAjustado, 2);
+}
+
+int CountOpenPositionsEAPrincipal()
+{
+   int count = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      if(OrderSelect(i, SELECT_BY_POS)) {
+         string orderSymbol = OrderSymbol();
+         if(NormalizeSymbol(orderSymbol) == SymbolXAU)
+         {
+            // ✅ EXCLUIR ÓRDENES DEL PARAGUAS
+            if(OrderMagicNumber() == Magic_Number) continue;
+            if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
+            
+            count++;  // ← SOLO EA PRINCIPAL
+         }
+      }
+   }
+   return count;
 }
 
 //+------------------------------------------------------------------+
