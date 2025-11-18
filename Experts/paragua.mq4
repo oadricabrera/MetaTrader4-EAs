@@ -923,32 +923,21 @@ void GestionarResetDeteccion()
 
 // Llamar esta función en OnTick() y OnTimer()
 
-//+------------------------------------------------------------------+
-//| Calcular lote híbrido adaptativo (CORREGIDA)                    |
-//+------------------------------------------------------------------+
+// NUEVO (solo posiciones):
 void CalcularLoteInicial()
 {
    int totalPosiciones = CountOpenPositions();
    
-   double lotePorPosiciones = totalPosiciones * FactorPosiciones;
-   double equity = AccountEquity();
-   double marginRequired = MarketInfo(TradingSymbol, MODE_MARGINREQUIRED);
-   double lotePorEquity = LoteMinimo;
+   double loteCalculado = totalPosiciones * FactorPosiciones;
    
-   if(marginRequired > 0.001)
-      lotePorEquity = (equity * FactorEquity) / marginRequired;
-   else
-      Print("⚠️  Margen requerido es cero o muy bajo. Usando lote mínimo.");
-
-   // 🆕 CÁLCULO DEL LOTE FINAL
-   double loteCalculado = MathMax(lotePorPosiciones, lotePorEquity);
+   // APLICAR LÍMITES
    loteCalculado = MathMin(loteCalculado, LoteMaximo);
    loteCalculado = MathMax(loteCalculado, LoteMinimo);
    
    LoteFijo = NormalizeDouble(loteCalculado, 2);
    
-   Print(StringFormat("Lote calculado: %.3f (Pos: %.3f, Equity: %.3f)", 
-                     LoteFijo, lotePorPosiciones, lotePorEquity));
+   Print(StringFormat("Lote calculado: %.3f (solo por posiciones: %d * %.3f)", 
+                     LoteFijo, totalPosiciones, FactorPosiciones));
 }
 
 //+------------------------------------------------------------------+
@@ -1503,7 +1492,11 @@ int CountOpenPositions()
          string orderSymbol = OrderSymbol();
          if(NormalizeSymbol(orderSymbol) == SymbolXAU)
          {
-            count++;
+            // ✅ EXCLUIR ÓRDENES DEL PARAGUAS
+            if(OrderMagicNumber() == Magic_Number) continue;
+            if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
+            
+            count++;  // ← SOLO EA PRINCIPAL
          }
       }
    }
