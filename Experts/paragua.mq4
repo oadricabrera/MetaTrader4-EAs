@@ -163,6 +163,7 @@ void OnTimer()
    double balance = AccountBalance();
    double equityPercent = (balance > 0) ? (equity / balance) * 100.0 : 100.0;
    double spread = GetSpreadForXAUUSD();
+   CurrentOpenPositions = CountOpenPositions(); // ✅ Actualizar contador también en OnTimer
    
    // 🆕 NUEVO: Verificación de recalibración por distancia ≥10%
    if(ModoProteccionActivado && (equityPercent - UltimoEscalon) >= 10.0)
@@ -1391,7 +1392,7 @@ void UpdateMonitoringPanel(double equityPercent, double spread, long chartId)
    }
    else
    {
-      estadoText = "VIGILANCIA";
+      estadoText = "VIGILANCIA (Límite: " + DoubleToString(EquityThreshold, 1) + "%)";
       estadoColor = clrWhite;
    }
    
