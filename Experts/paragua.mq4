@@ -462,44 +462,6 @@ void AfterCoberturasClosed(double equityPercent)
          // Reabrir cobertura inicial
          if(AbrirCoberturaConReintentos())
          {
-            string mensaje = StringFormat("PROTECCIÓN RECALIBRADA - Nuevo piso: %.2f%%", PisoActual);
-            SendNotifications(mensaje);
-            Print(mensaje);
-         }
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| MODIFICACIÓN: Nueva función de cierre dual                      |
-//+------------------------------------------------------------------+
-bool DebeCerrarCoberturas()
-{
-   // Condición 1: Drawdown protector >= 10% por 60 segundos
-   bool drawdownConfirmado = DrawdownProtectorConfirmado(MaxDrawdownProtector, TiempoConfirmacionDrawdown);
-   
-   // Condición 2: Tendencia H4 confirmada (5 filtros)
-   bool tendenciaConfirmada = TendenciaH4Confirmada();
-   
-   // Cerrar si se cumple alguna de las dos condiciones
-   if(drawdownConfirmado || tendenciaConfirmada)
-   {
-      string motivo = drawdownConfirmado ? "Drawdown 10%" : "Cambio tendencia H4";
-      Print("🚨 CIERRE ACTIVADO - Motivo: " + motivo);
-      return true;
-   }
-   
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| Drawdown con confirmación temporal (NUEVA)                      |
-//+------------------------------------------------------------------+
-bool DrawdownProtectorConfirmado(double porcentaje, int segundos)
-{
-   double drawdownActual = CalcularDrawdownProtector();
-   
-   if(drawdownActual >= porcentaje) {
       if(TiempoInicioDrawdown == 0) {
          TiempoInicioDrawdown = TimeCurrent();
          Print("Drawdown crítico detectado: " + DoubleToString(drawdownActual, 1) + "%. Esperando confirmación...");
@@ -1480,19 +1442,19 @@ void UpdateMonitoringPanel(double equityPercent, double spread, long chartId)
    
    if(ModoProteccionActivado)
    {
-      estadoText = "🔴 MODO PROTECCIÓN ACTIVO";
+      estadoText = "PROTECCIÓN";
       estadoColor = clrRed;
    }
    else if(InWaitingState)
    {
       int segundosRestantes = MinDuration * 60 - (int)(TimeCurrent() - TimerStart);
-      estadoText = "🟡 TEMPORIZADOR: " + IntegerToString(segundosRestantes) + "s";
+      estadoText = "TEMPORIZADOR: " + IntegerToString(segundosRestantes) + "s";
       estadoColor = clrYellow;
    }
    else
    {
-      estadoText = "🟢 MODO VIGILANCIA";
-      estadoColor = clrGreen;
+      estadoText = "VIGILANCIA";
+      estadoColor = clrWhite;
    }
    
    UpdateChartLabel(chartId, "LblEstado", estadoText, estadoColor);
