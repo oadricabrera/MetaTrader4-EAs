@@ -375,68 +375,6 @@ void ActivarModoProteccion()
    SendNotifications(mensaje);
    PlayAlarmSound();
    Print(mensaje);
-}
-
-//+------------------------------------------------------------------+
-//| Gestionar modo protección activo (MODIFICADA CON BLOQUEO)       |
-//+------------------------------------------------------------------+
-void ManageProtectionMode(double equityPercent)
-{
-   // Si estamos en proceso de cierre, no hacer nada
-   if(BloqueoPorCierre)
-   {
-      Print("🔒 Bloqueo activo - Procesando cierre, no se abren nuevas coberturas");
-      return;
-   }
-
-   // Verificar cambio de tendencia para cerrar coberturas
-   if(DebeCerrarCoberturas())
-   {
-      Print("🚨 Condición de cierre detectada - Activando bloqueo");
-      BloqueoPorCierre = true; // 🆕 ACTIVAR BLOQUEO
-
-      if(!CerrarCoberturasConReintentos())
-      {
-         IntentosCierreFallidos++;
-         Print(StringFormat("Intento fallido #%d de cerrar coberturas", IntentosCierreFallidos));
-         
-         if(IntentosCierreFallidos >= MaxIntentosCierreFallidos)
-         {
-            Print("MÁXIMO DE INTENTOS FALLIDOS ALCANZADO - Activando Plan B");
-            ActivarPlanB();
-            BloqueoPorCierre = false; // 🆕 DESBLOQUEAR INCLUSO EN FALLO
-         }
-         else
-         {
-            BloqueoPorCierre = false; // 🆕 DESBLOQUEAR PARA REINTENTAR MÁS TARDE
-         }
-      }
-      else
-      {
-         // Éxito - resetear contador y continuar con lógica post-cierre
-         IntentosCierreFallidos = 0;
-         AfterCoberturasClosed(equityPercent);
-         BloqueoPorCierre = false; // 🆕 DESBLOQUEAR DESPUÉS DEL CIERRE
-         return;
-      }
-   }
-   
-   // Lógica de nuevas coberturas escalonadas CON ESCALONAMIENTO EXACTO
-   if(equityPercent <= UltimoEscalon - 1.0)
-   {
-      if(AbrirCoberturaConReintentos())
-      {
-         // MODIFICACIÓN CRÍTICA: Escalón exacto del 1%
-         UltimoEscalon = UltimoEscalon - 1.0;  // ← GARANTIZA 76%, 75%, 74% exactos
-         Print(StringFormat("Nueva cobertura abierta en: %.2f%% - Próximo escalón: %.2f%%", 
-                           equityPercent, UltimoEscalon));
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Lógica después de cerrar coberturas (NUEVA)                     |
-//+------------------------------------------------------------------+
 void AfterCoberturasClosed(double equityPercent)
 {
    // Verificar si equity se recuperó por debajo del umbral
