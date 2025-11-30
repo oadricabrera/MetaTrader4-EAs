@@ -1,0 +1,12 @@
+[33m01c221f[m[33m ([m[1;36mHEAD -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m)[m el contador se actualiza incluso si el mercado está lento (sin ticks)
+[33m7960e47[m limite de posciones y escalonamiento del 5% y 10%
+[33m3c99ef5[m ya no cierra posciones
+[33m0b8af45[m contar solo posiciones del ea principal
+[33m5245b50[m calculo de size
+[33m586a4a8[m detección de buy y sell
+[33mac5c088[m Recalibración del piso al 10% del equity/Balance
+[33m28f539d[m Organize: move paragua.mq4 to Experts folder
+[33m6a2527f[m Add Experts folder with first MQL4 EA
+[33mca1df66[m Add MQL4 specific ignore rules
+[33me3eaa88[m Inicio de Paragua
+[33mbcab15d[m[33m ([m[1;31morigin/main[m[33m)[m Initial commit

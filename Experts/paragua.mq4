@@ -310,6 +310,9 @@ bool IsXAUUSDChartOpen()
    return (chartsFound > 0);
 }
 
+//+------------------------------------------------------------------+
+//| Activar modo protección (MODIFICADA)                            |
+//+------------------------------------------------------------------+
 void ActivarModoProteccion()
 {
    // ✅ BLOQUEO: Si ya está activo, NO HACER NADA
@@ -376,6 +379,129 @@ void ActivarModoProteccion()
    SendNotifications(mensaje);
    PlayAlarmSound();
    Print(mensaje);
+}
+
+//+------------------------------------------------------------------+
+//| Gestionar modo protección activo (MODIFICADA CON BLOQUEO)       |
+//+------------------------------------------------------------------+
+void ManageProtectionMode(double equityPercent)
+{
+   // Si estamos en proceso de cierre, no hacer nada
+   if(BloqueoPorCierre)
+   {
+      Print("🔒 Bloqueo activo - Procesando cierre, no se abren nuevas coberturas");
+      return;
+   }
+
+   // Verificar cambio de tendencia para cerrar coberturas
+   if(DebeCerrarCoberturas())
+   {
+      Print("🚨 Condición de cierre detectada - Activando bloqueo");
+      BloqueoPorCierre = true; // 🆕 ACTIVAR BLOQUEO
+
+      if(!CerrarCoberturasConReintentos())
+      {
+         IntentosCierreFallidos++;
+         Print(StringFormat("Intento fallido #%d de cerrar coberturas", IntentosCierreFallidos));
+         
+         if(IntentosCierreFallidos >= MaxIntentosCierreFallidos)
+         {
+            Print("MÁXIMO DE INTENTOS FALLIDOS ALCANZADO - Activando Plan B");
+            ActivarPlanB();
+            BloqueoPorCierre = false; // 🆕 DESBLOQUEAR INCLUSO EN FALLO
+         }
+         else
+         {
+            BloqueoPorCierre = false; // 🆕 DESBLOQUEAR PARA REINTENTAR MÁS TARDE
+         }
+      }
+      else
+      {
+         // Éxito - resetear contador y continuar con lógica post-cierre
+         IntentosCierreFallidos = 0;
+         AfterCoberturasClosed(equityPercent);
+         BloqueoPorCierre = false; // 🆕 DESBLOQUEAR DESPUÉS DEL CIERRE
+         return;
+      }
+   }
+   
+   // --- LÓGICA DE ESCALONAMIENTO DINÁMICO ---
+   
+   // 1. Contar cuántas coberturas tenemos actualmente en este episodio
+   int coberturasActuales = CountOpenPositionsProtector();
+   
+   // 2. Verificar límite máximo de 11 posiciones
+   if(coberturasActuales >= 11)
+   {
+      // Ya tenemos el máximo, no abrir más
+      return;
+   }
+   
+   // 3. Calcular el salto necesario para la SIGUIENTE cobertura
+   // Si tenemos 1, vamos por la 2. Si tenemos 3, vamos por la 4.
+   int siguienteCobertura = coberturasActuales + 1;
+   double saltoRequerido = CalcularSaltoRequerido(siguienteCobertura);
+   
+   // 4. Verificar si el equity ha caído lo suficiente
+   if(equityPercent <= UltimoEscalon - saltoRequerido)
+   {
+      if(AbrirCoberturaConReintentos())
+      {
+         // Actualizar escalón
+         UltimoEscalon = UltimoEscalon - saltoRequerido;
+         
+         Print(StringFormat("Nueva cobertura #%d abierta en: %.2f%% (Salto: %.1f%%) - Próximo escalón base: %.2f%%", 
+                           siguienteCobertura, equityPercent, saltoRequerido, UltimoEscalon));
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Calcular salto requerido según el número de cobertura           |
+//+------------------------------------------------------------------+
+double CalcularSaltoRequerido(int numeroCobertura)
+{
+   // La cobertura #1 se abre al activar (no entra aquí)
+   
+   // Coberturas 2 y 3: Salto de 1%
+   if(numeroCobertura <= 3) return 1.0;
+   
+   // Cobertura 4: Salto de 5% (después de la 3)
+   if(numeroCobertura == 4) return 5.0;
+   
+   // Coberturas 5 y 6: Salto de 1%
+   if(numeroCobertura <= 6) return 1.0;
+   
+   // Cobertura 7: Salto de 10% (después de la 6)
+   if(numeroCobertura == 7) return 10.0;
+   
+   // Coberturas 8 a 11: Salto de 1%
+   return 1.0;
+}
+
+//+------------------------------------------------------------------+
+//| Contar solo posiciones del protector                            |
+//+------------------------------------------------------------------+
+int CountOpenPositionsProtector()
+{
+   int count = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      if(OrderSelect(i, SELECT_BY_POS)) {
+         string orderSymbol = OrderSymbol();
+         if(NormalizeSymbol(orderSymbol) == SymbolXAU && 
+            OrderMagicNumber() == Magic_Number)
+         {
+            count++;
+         }
+      }
+   }
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Lógica después de cerrar coberturas (NUEVA)                     |
+//+------------------------------------------------------------------+
 void AfterCoberturasClosed(double equityPercent)
 {
    // Verificar si equity se recuperó por debajo del umbral
@@ -401,21 +527,36 @@ void AfterCoberturasClosed(double equityPercent)
          // Reabrir cobertura inicial
          if(AbrirCoberturaConReintentos())
          {
-      if(TiempoInicioDrawdown == 0) {
-         TiempoInicioDrawdown = TimeCurrent();
-         Print("Drawdown crítico detectado: " + DoubleToString(drawdownActual, 1) + "%. Esperando confirmación...");
-      }
-      else if(TimeCurrent() - TiempoInicioDrawdown >= segundos) {
-         TiempoInicioDrawdown = 0;
-         return true;
-      }
-   } else {
-      // Resetear si el drawdown mejora
-      if(TiempoInicioDrawdown != 0) {
-         Print("Drawdown mejoró. Cancelando confirmación.");
-         TiempoInicioDrawdown = 0;
+            string mensaje = StringFormat("PROTECCIÓN RECALIBRADA - Nuevo piso: %.2f%%", PisoActual);
+            SendNotifications(mensaje);
+            Print(mensaje);
+         }
       }
    }
+}
+
+//+------------------------------------------------------------------+
+//| MODIFICACIÓN: Nueva función de cierre dual (DESACTIVADA)        |
+//+------------------------------------------------------------------+
+bool DebeCerrarCoberturas()
+{
+   /* LÓGICA COMENTADA POR SOLICITUD DEL USUARIO - NUNCA CERRAR AUTOMÁTICAMENTE
+   // Verificar si hay alguna cobertura con ganancia
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      if(OrderSelect(i, SELECT_BY_POS)) {
+         string orderSymbol = OrderSymbol();
+         if(NormalizeSymbol(orderSymbol) == SymbolXAU && 
+            OrderMagicNumber() == Magic_Number) {
+            
+            double profit = OrderProfit() + OrderSwap() + OrderCommission();
+            if(profit > 0) {
+               Print("✅ CIERRE ACTIVADO - Motivo: Cobertura en ganancia ($" + DoubleToString(profit, 2) + ")");
+               return true;
+            }
+         }
+      }
+   }
+   */
    
    return false;
 }
@@ -444,6 +585,33 @@ double CalcularDrawdownProtector()
       return ((maxProfit - currentProfit) / maxProfit) * 100;
    }
    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Drawdown con confirmación temporal (NUEVA)                      |
+//+------------------------------------------------------------------+
+bool DrawdownProtectorConfirmado(double porcentaje, int segundos)
+{
+   double drawdownActual = CalcularDrawdownProtector();
+   
+   if(drawdownActual >= porcentaje) {
+      if(TiempoInicioDrawdown == 0) {
+         TiempoInicioDrawdown = TimeCurrent();
+         Print("Drawdown crítico detectado: " + DoubleToString(drawdownActual, 1) + "%. Esperando confirmación...");
+      }
+      else if(TimeCurrent() - TiempoInicioDrawdown >= segundos) {
+         TiempoInicioDrawdown = 0;
+         return true;
+      }
+   } else {
+      // Resetear si el drawdown mejora
+      if(TiempoInicioDrawdown != 0) {
+         Print("Drawdown mejoró. Cancelando confirmación.");
+         TiempoInicioDrawdown = 0;
+      }
+   }
+   
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -632,23 +800,14 @@ void LoadPersistentData()
       DireccionEAPrincipal = EpisodioDireccion;
       LoteFijo = EpisodioLoteBase;
       UltimoEscalon = EpisodioUltimoEscalon;
-      PisoActual = EpisodioPisoActual;  // 🆕 RESTAURAR PISO ACTUAL
-      Print("Modo protección restaurado desde datos persistentes - Piso: " + DoubleToString(PisoActual, 2) + "%");
-   }
-   
-   // ✅ VERIFICAR INTEGRIDAD AL CARGAR DATOS
-   if(ModoProteccionActivado && DireccionDetectada)
-   {
-      if(DireccionEAPrincipal != EpisodioDireccion)
-      {
-         Print("⚠️  Corrigiendo inconsistencia en datos persistentes");
-         DireccionEAPrincipal = EpisodioDireccion;
-      }
+      PisoActual = EpisodioPisoActual;
+      
+      Print("🔄 MODO PROTECCIÓN RESTAURADO - Dirección: " + string(DireccionEAPrincipal == OP_BUY ? "BUY" : "SELL") + 
+            " - Piso: " + DoubleToString(PisoActual, 2) + "%");
    }
 }
-
 //+------------------------------------------------------------------+
-//| Guardar datos persistentes                                       |
+//| Guardar datos persistentes (MEJORADA)                           |
 //+------------------------------------------------------------------+
 void SavePersistentData()
 {
@@ -662,87 +821,69 @@ void SavePersistentData()
    GlobalVariableSet("Protector_BalanceAtMaxDrawdown", BalanceAtMaxDrawdown);
    GlobalVariableSet("Protector_LoteMaxAtMaxDrawdown", LoteMaxAtMaxDrawdown);
    
-   // Guardar datos del episodio si está activo
-   if(ModoProteccionActivado)
-   {
-      GlobalVariableSet("Protector_EpisodioDireccion", EpisodioDireccion);
-      GlobalVariableSet("Protector_EpisodioLoteBase", EpisodioLoteBase);
-      GlobalVariableSet("Protector_EpisodioUltimoEscalon", EpisodioUltimoEscalon);
-      GlobalVariableSet("Protector_EpisodioPisoActual", EpisodioPisoActual);
-      GlobalVariableSet("Protector_EpisodioInicio", EpisodioInicio);
-   }
-   
-   // 🆕 GUARDAR DATOS DE DETECCIÓN ÚNICA
+   // Guardar datos de detección única
    GlobalVariableSet("Protector_DireccionDetectada", DireccionDetectada);
    GlobalVariableSet("Protector_TiempoDeteccion", TiempoDeteccion);
+   
+   // Si estamos en modo protección, asegurar que los datos del episodio estén guardados
+   if(ModoProteccionActivado)
+   {
+      GuardarEpisodio();
+   }
 }
 
 //+------------------------------------------------------------------+
-//| Normalizar símbolo para comparaciones robustas                  |
+//| Normalizar símbolo (elimina sufijos/prefijos)                   |
 //+------------------------------------------------------------------+
 string NormalizeSymbol(string symbol)
 {
-   if(symbol == "") return "";
-   
    string normalized = symbol;
-   int len = StringLen(normalized);
+   
+   // Eliminar sufijos comunes
+   StringReplace(normalized, "m", "");
+   StringReplace(normalized, "c", "");
+   StringReplace(normalized, "pro", "");
+   StringReplace(normalized, ".", "");
    
    // Convertir a mayúsculas
-   for(int i = 0; i < len; i++)
-   {
-      int charCode = StringGetChar(normalized, i);
-      if(charCode >= 97 && charCode <= 122) // 'a' to 'z' en ASCII
-      {
-         StringSetChar(normalized, i, (uchar)(charCode - 32)); // CONVERSIÓN EXPLÍCITA A uchar
-      }
-   }
+   StringToUpper(normalized);
    
-   // Resto del código igual...
+   // Si contiene XAUUSD o GOLD, devolver XAUUSD
+   if(StringFind(normalized, "XAUUSD") >= 0 || StringFind(normalized, "GOLD") >= 0)
+      return "XAUUSD";
+      
    return normalized;
 }
 
 //+------------------------------------------------------------------+
-//| Obtener símbolo real para operaciones                           |
+//| Obtener símbolo de trading real                                  |
 //+------------------------------------------------------------------+
 string GetTradingSymbol()
 {
-   // Buscar el símbolo real usado en el mercado
-   long chartId = ChartFirst();
-   while(chartId >= 0)
+   // Intentar encontrar el símbolo que coincida con XAUUSD en el market watch
+   for(int i = 0; i < SymbolsTotal(true); i++)
    {
-      string chartSymbol = ChartSymbol(chartId);
-      if(NormalizeSymbol(chartSymbol) == SymbolXAU)
-         return chartSymbol; // Devolver el símbolo exacto del gráfico
-      chartId = ChartNext(chartId);
+      string symbol = SymbolName(i, true);
+      if(NormalizeSymbol(symbol) == "XAUUSD")
+         return symbol;
    }
-   
-   // Si no encuentra gráficos, probar variantes comunes
-   string possibleSymbols[] = {"XAUUSD", "XAUUSD.", "GOLD", "XAUUSDm", "XAUUSDmicro"};
-   for(int i = 0; i < ArraySize(possibleSymbols); i++)
-   {
-      if(SymbolSelect(possibleSymbols[i], true))
-      {
-         Print("Símbolo seleccionado: " + possibleSymbols[i]);
-         return possibleSymbols[i];
-      }
-   }
-   
-   // Último recurso
-   Print("Advertencia: Usando símbolo por defecto XAUUSD");
-   return "XAUUSD";
+   return "XAUUSD"; // Fallback
 }
 
+//+------------------------------------------------------------------+
+//| Detectar dirección del EA principal (MEJORADA)                  |
+//+------------------------------------------------------------------+
 bool DetectarDireccionEAPrincipal()
 {
-   // ✅ SI YA SE DETECTÓ, NO VOLVER A DETECTAR
-   if(DireccionDetectada)
+   // 🆕 SI YA ESTÁ DETECTADA Y NO SE REQUIERE RESET, USAR LA EXISTENTE
+   if(DireccionDetectada && !DebeResetearDeteccion())
    {
-      Print("🔒 Dirección ya detectada - No redetectar");
-      return (DireccionEAPrincipal == OP_BUY || DireccionEAPrincipal == OP_SELL);
+      DireccionEAPrincipal = (int)GlobalVariableGet("Protector_EpisodioDireccion");
+      if(DireccionEAPrincipal != -1) return true;
    }
 
-   int buysPrincipal = 0;
-   int sellsPrincipal = 0;
+   int buyCount = 0;
+   int sellCount = 0;
    
    for(int i = OrdersTotal()-1; i >= 0; i--)
    {
@@ -750,119 +891,142 @@ bool DetectarDireccionEAPrincipal()
          string orderSymbol = OrderSymbol();
          if(NormalizeSymbol(orderSymbol) == SymbolXAU)
          {
-            // ✅ EXCLUIR ÓRDENES DEL PARAGUAS
+            // Ignorar órdenes del protector
             if(OrderMagicNumber() == Magic_Number) continue;
-            if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
             
-            if(OrderType() == OP_BUY) 
-               buysPrincipal++;
-            else if(OrderType() == OP_SELL) 
-               sellsPrincipal++;
+            if(OrderType() == OP_BUY) buyCount++;
+            if(OrderType() == OP_SELL) sellCount++;
          }
       }
    }
    
-   // ✅ LÓGICA DE DECISIÓN
-   if(buysPrincipal > 0 && sellsPrincipal == 0)
-   {
+   if(buyCount > sellCount) {
       DireccionEAPrincipal = OP_BUY;
       DireccionDetectada = true;
       TiempoDeteccion = TimeCurrent();
-      Print("✅ Dirección detectada: BUY (" + IntegerToString(buysPrincipal) + " posiciones) - " + TimeToString(TiempoDeteccion));
+      GuardarEpisodio(); // Guardar detección
       return true;
    }
-   else if(sellsPrincipal > 0 && buysPrincipal == 0)
-   {
+   
+   if(sellCount > buyCount) {
       DireccionEAPrincipal = OP_SELL;
       DireccionDetectada = true;
       TiempoDeteccion = TimeCurrent();
-      Print("✅ Dirección detectada: SELL (" + IntegerToString(sellsPrincipal) + " posiciones) - " + TimeToString(TiempoDeteccion));
+      GuardarEpisodio(); // Guardar detección
       return true;
    }
-   else if(buysPrincipal > 0 && sellsPrincipal > 0)
+   
+   return false; // No se pudo determinar (igual cantidad o cero)
+}
+
+//+------------------------------------------------------------------+
+//| Verificar si se debe resetear la detección (NUEVA)              |
+//+------------------------------------------------------------------+
+bool DebeResetearDeteccion()
+{
+   // Resetear si ha pasado mucho tiempo sin actividad (ej. 24 horas)
+   if(TiempoDeteccion > 0 && (TimeCurrent() - TiempoDeteccion) > 24 * 3600)
+      return true;
+      
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Gestionar reset de detección (NUEVA)                            |
+//+------------------------------------------------------------------+
+void GestionarResetDeteccion()
+{
+   if(DireccionDetectada && CountOpenPositionsEAPrincipal() == 0)
    {
-      Print("🚨 ERROR: EA principal tiene operaciones mezcladas");
-      return false;
-   }
-   else
-   {
-      Print("⚠️  No se detectaron operaciones del EA principal");
-      return false;
+      // Si no hay posiciones del EA principal, podemos resetear la detección
+      // para estar listos para el próximo ciclo
+      if(DebeResetearDeteccion())
+      {
+         DireccionDetectada = false;
+         DireccionEAPrincipal = -1;
+         TiempoDeteccion = 0;
+         Print("ℹ️ Detección de dirección reseteada por inactividad");
+      }
    }
 }
 
-bool DebeResetearDeteccion()
+//+------------------------------------------------------------------+
+//| Calcular lote inicial basado en el EA principal                 |
+//+------------------------------------------------------------------+
+void CalcularLoteInicial()
 {
+   double loteTotal = 0;
+   int count = 0;
+   
    for(int i = OrdersTotal()-1; i >= 0; i--)
    {
       if(OrderSelect(i, SELECT_BY_POS)) {
          string orderSymbol = OrderSymbol();
          if(NormalizeSymbol(orderSymbol) == SymbolXAU)
          {
-            // Excluir órdenes del paraguas
+            // Solo órdenes del EA principal
             if(OrderMagicNumber() == Magic_Number) continue;
-            if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
             
-            // Si encuentra alguna orden del EA principal, NO resetear
-            return false;
+            loteTotal += OrderLots();
+            count++;
          }
       }
    }
-   // No se encontraron órdenes del EA principal → SÍ resetear
-   return true;
-}
-
-void GestionarResetDeteccion()
-{
-   if(DireccionDetectada && DebeResetearDeteccion())
+   
+   if(count > 0)
    {
-      DireccionDetectada = false;
-      DireccionEAPrincipal = -1;
-      Print("🔄 Reset detección - EA principal sin posiciones");
+      // Lógica: Lote protector = Lote promedio EA principal * Factor
+      // O simplemente un lote fijo base
+      
+      // Opción A: Usar lote promedio
+      double lotePromedio = loteTotal / count;
+      LoteFijo = lotePromedio; 
+      
+      // Opción B: Ajustar por parámetros (como estaba antes)
+      // LoteFijo = LoteMinimo + (CurrentOpenPositions * FactorPosiciones) + (AccountEquity() * FactorEquity);
    }
-}
-
-// Llamar esta función en OnTick() y OnTimer()
-
-void CalcularLoteInicial()
-{
-   int totalPosicionesEA = CountOpenPositionsEAPrincipal();  // ← NUEVA FUNCIÓN SOLO EA PRINCIPAL
+   else
+   {
+      LoteFijo = LoteMinimo;
+   }
    
-   double loteCalculado = totalPosicionesEA * FactorPosiciones;
+   // Ajustar a límites
+   LoteFijo = MathMax(LoteFijo, LoteMinimo);
+   LoteFijo = MathMin(LoteFijo, LoteMaximo);
    
-   loteCalculado = MathMin(loteCalculado, LoteMaximo);
-   loteCalculado = MathMax(loteCalculado, LoteMinimo);
+   // Verificar margen
+   LoteFijo = AjustarLotePorMargen(LoteFijo);
    
-   LoteFijo = NormalizeDouble(loteCalculado, 2);
-   
-   Print(StringFormat("Lote calculado: %.3f (solo por posiciones EA Principal: %d × %.3f)", 
-                     LoteFijo, totalPosicionesEA, FactorPosiciones));
+   LoteFijo = NormalizeDouble(LoteFijo, 2);
 }
 
 //+------------------------------------------------------------------+
-//| Ajustar lote por margen disponible                               |
+//| Ajustar lote según margen disponible (NUEVA)                    |
 //+------------------------------------------------------------------+
-double AjustarLotePorMargen(double lote)
+double AjustarLotePorMargen(double loteDeseado)
 {
    double margenLibre = AccountFreeMargin();
    double margenRequerido = MarketInfo(TradingSymbol, MODE_MARGINREQUIRED);
    
-   if(margenRequerido <= 0) return lote;
+   if(margenRequerido <= 0) return loteDeseado;
    
-   double loteMaximoPorMargen = margenLibre / margenRequerido;
-   double loteAjustado = MathMin(lote, loteMaximoPorMargen);
+   double maxLotePosible = margenLibre / margenRequerido;
    
-   // Asegurar lote mínimo
-   loteAjustado = MathMax(loteAjustado, LoteMinimo);
+   // Dejar un colchón del 20%
+   maxLotePosible = maxLotePosible * 0.8;
    
-   if(loteAjustado < lote)
+   if(loteDeseado > maxLotePosible)
    {
-      Print(StringFormat("Lote ajustado por margen: %.3f -> %.3f", lote, loteAjustado));
+      Print("⚠️ Lote ajustado por margen: " + DoubleToString(loteDeseado, 2) + " -> " + DoubleToString(maxLotePosible, 2));
+      return maxLotePosible;
    }
    
-   return NormalizeDouble(loteAjustado, 2);
+   return loteDeseado;
 }
 
+//+------------------------------------------------------------------+
+//| Contar posiciones del EA Principal                              |
+//+------------------------------------------------------------------+
 int CountOpenPositionsEAPrincipal()
 {
    int count = 0;
@@ -870,13 +1034,10 @@ int CountOpenPositionsEAPrincipal()
    {
       if(OrderSelect(i, SELECT_BY_POS)) {
          string orderSymbol = OrderSymbol();
-         if(NormalizeSymbol(orderSymbol) == SymbolXAU)
+         if(NormalizeSymbol(orderSymbol) == SymbolXAU && 
+            OrderMagicNumber() != Magic_Number) // Diferente magic number
          {
-            // ✅ EXCLUIR ÓRDENES DEL PARAGUAS
-            if(OrderMagicNumber() == Magic_Number) continue;
-            if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
-            
-            count++;  // ← SOLO EA PRINCIPAL
+            count++;
          }
       }
    }
@@ -884,349 +1045,193 @@ int CountOpenPositionsEAPrincipal()
 }
 
 //+------------------------------------------------------------------+
-//| Cerrar gráficos XAUUSD con reintentos robustos - VERSIÓN CORREGIDA |
+//| Cerrar gráfico XAUUSD con reintentos (MEJORADA)                 |
 //+------------------------------------------------------------------+
 bool CerrarGraficoXAUUSDConReintentos()
 {
-   int totalGraficos = 0;
-   int graficosCerrados = 0;
+   int intentos = 0;
+   bool exito = false;
    
-   // ✅ CONTADOR DE SEGURIDAD PARA EVITAR BUCLE INFINITO
-   int maxCharts = 100; // Máximo razonable de gráficos
-   int chartCount = 0;
-   
-   // PRIMERO: Contar gráficos XAUUSD
-   long chartId = ChartFirst();
-   while(chartId >= 0 && chartCount < maxCharts)
+   while(intentos < MaxReintentosCierre && !exito)
    {
-      string chartSymbol = ChartSymbol(chartId);
-      if(NormalizeSymbol(chartSymbol) == SymbolXAU)
-         totalGraficos++;
+      long chartId = ChartFirst();
+      bool found = false;
       
-      chartId = ChartNext(chartId);
-      chartCount++;
-   }
-   
-   if(totalGraficos == 0) 
-   {
-      Print("No hay gráficos XAUUSD abiertos");
-      return true;
-   }
-   
-   Print("Cerrando " + IntegerToString(totalGraficos) + " gráficos XAUUSD");
-   
-   // SEGUNDO: Cerrar gráficos con reintentos
-   for(int intento = 0; intento < MaxReintentosCierre; intento++)
-   {
-      graficosCerrados = 0;
-      chartCount = 0; // Reset contador de seguridad
-      chartId = ChartFirst();
-      
-      while(chartId >= 0 && chartCount < maxCharts)
+      while(chartId >= 0)
       {
          string chartSymbol = ChartSymbol(chartId);
          if(NormalizeSymbol(chartSymbol) == SymbolXAU)
          {
+            found = true;
             if(ChartClose(chartId))
             {
-               graficosCerrados++;
-               Print("Gráfico cerrado exitosamente: " + chartSymbol);
+               Print("Gráfico XAUUSD cerrado correctamente");
             }
             else
             {
-               Print("Fallo al cerrar gráfico: " + chartSymbol);
+               Print("Error al cerrar gráfico: " + IntegerToString(GetLastError()));
             }
          }
-         
-         // ✅ OBTENER SIGUIENTE GRÁFICO ANTES DE CONTINUAR
-         long nextChartId = ChartNext(chartId);
-         if(nextChartId == chartId) 
-         {
-            Print("⚠️  ChartNext() devolvió el mismo ID. Forzando avance...");
-            break; // Romper bucle si no avanza
-         }
-         chartId = nextChartId;
-         chartCount++;
+         chartId = ChartNext(chartId);
       }
       
-      if(graficosCerrados == totalGraficos)
-      {
-         Print("✅ Todos los gráficos cerrados en intento " + IntegerToString(intento+1));
-         return true;
-      }
+      if(!found) exito = true; // No quedan gráficos
       
-      if(intento < MaxReintentosCierre - 1)
-      {
-         int pendientes = totalGraficos - graficosCerrados;
-         Print("Reintento " + IntegerToString(intento+1) + ": " + IntegerToString(pendientes) + " gráficos pendientes");
-         Sleep(1000 * (intento + 1)); // Backoff progresivo
+      if(!exito) {
+         intentos++;
+         Sleep(500); // Esperar antes de reintentar
       }
    }
    
-   int pendientes = totalGraficos - graficosCerrados;
-   Alert("❌ CRÍTICO: " + IntegerToString(pendientes) + " gráficos XAUUSD no se cerraron");
-   return false;
+   return exito;
 }
 
 //+------------------------------------------------------------------+
-//| Abrir cobertura con reintentos robustos                         |
+//| Abrir cobertura con reintentos (MEJORADA)                       |
 //+------------------------------------------------------------------+
 bool AbrirCoberturaConReintentos()
 {
-   if(DireccionEAPrincipal != OP_BUY && DireccionEAPrincipal != OP_SELL)
-      return false;
+   int intentos = 0;
+   int ticket = -1;
    
-   int tipoOrden;
-   double precio;
+   int tipoOrden = (DireccionEAPrincipal == OP_BUY) ? OP_SELL : OP_BUY; // Cobertura inversa
+   double precio = (tipoOrden == OP_BUY) ? MarketInfo(TradingSymbol, MODE_ASK) : MarketInfo(TradingSymbol, MODE_BID);
+   color clr = (tipoOrden == OP_BUY) ? clrBlue : clrRed;
    
-   if(DireccionEAPrincipal == OP_BUY)
+   while(intentos < MaxReintentosOrden && ticket < 0)
    {
-      tipoOrden = OP_SELL;
-      precio = MarketInfo(TradingSymbol, MODE_BID);
-   }
-   else
-   {
-      tipoOrden = OP_BUY;
-      precio = MarketInfo(TradingSymbol, MODE_ASK);
-   }
-   
-   // Ajustar lote por margen en cada apertura
-   double loteAjustado = AjustarLotePorMargen(LoteFijo);
-   
-   if(loteAjustado < LoteMinimo)
-   {
-      Print("Error: Lote ajustado es menor al mínimo permitido");
-      return false;
-   }
-   
-   int erroresRecuperables[] = {10004, 10006, 10007, 10008, 147};
-   datetime tiempoInicio = TimeCurrent();
-   int timeoutMaximo = 40;
-   
-   for(int intento = 0; intento < MaxReintentosOrden; intento++)
-   {
-      if(TimeCurrent() - tiempoInicio >= timeoutMaximo)
-      {
-         Print("TIMEOUT: No se pudo abrir cobertura después de " + IntegerToString(timeoutMaximo) + " segundos");
-         return false;
+      // Refrescar precio
+      RefreshRates();
+      precio = (tipoOrden == OP_BUY) ? MarketInfo(TradingSymbol, MODE_ASK) : MarketInfo(TradingSymbol, MODE_BID);
+      
+      // Verificar si el mercado está abierto
+      if(precio == 0) {
+         Print("Mercado cerrado o sin cotización. Esperando...");
+         Sleep(1000);
+         intentos++;
+         continue;
       }
       
-      GetLastError(); // 🆕 EVITA PROPAGACIÓN DE ERRORES
-      int ticket = OrderSend(TradingSymbol, tipoOrden, loteAjustado, precio, 3, 0, 0, 
-                            "Cobertura Protector", Magic_Number, 0, clrGreen);
+      ticket = OrderSend(TradingSymbol, tipoOrden, LoteFijo, precio, 3, 0, 0, "Protector Cobertura", Magic_Number, 0, clr);
       
-      if(ticket > 0)
-      {
-         Print("Cobertura abierta exitosamente (ticket: " + IntegerToString(ticket) + ") después de " + IntegerToString(intento+1) + " intentos");
-         return true;
-      }
-      else
+      if(ticket < 0)
       {
          int error = GetLastError();
-         bool esRecuperable = false;
+         Print("Error al abrir cobertura: " + IntegerToString(error) + " - Intento " + IntegerToString(intentos+1));
          
-         for(int i = 0; i < ArraySize(erroresRecuperables); i++)
-         {
-            if(error == erroresRecuperables[i])
-            {
-               esRecuperable = true;
-               break;
-            }
+         if(error == 130 || error == 131) { // Errores de stops o volumen
+             Print("Error crítico de orden. Abortando apertura.");
+             break;
          }
          
-         if(!esRecuperable)
-         {
-            Print("Error FATAL abriendo cobertura: " + IntegerToString(error));
-            return false;
-         }
-         
-         int sleepTime = 200 * (intento + 1);
-         Print("Reintento " + IntegerToString(intento+1) + " para abrir cobertura (error: " + IntegerToString(error) + "), esperando " + IntegerToString(sleepTime) + " ms");
-         Sleep(sleepTime);
-         
-         if(DireccionEAPrincipal == OP_BUY)
-            precio = MarketInfo(TradingSymbol, MODE_BID);
-         else
-            precio = MarketInfo(TradingSymbol, MODE_ASK);
+         Sleep(1000);
+         intentos++;
       }
    }
    
-   Print("FALLO PERSISTENTE: No se pudo abrir cobertura después de " + IntegerToString(MaxReintentosOrden) + " intentos");
+   if(ticket > 0) {
+      Backtest_Coberturas_Abiertas++; // Backtesting
+      return true;
+   }
+   
    return false;
 }
 
 //+------------------------------------------------------------------+
-//| Cerrar coberturas con reintentos robustos - SOLO POSICIONES GANADORAS |
+//| Cerrar todas las coberturas con reintentos (MEJORADA)           |
 //+------------------------------------------------------------------+
 bool CerrarCoberturasConReintentos()
 {
-   int erroresRecuperables[] = {10004, 10006, 10007, 10008, 147};
-   int coberturasCerradas = 0;
-   int totalCoberturasGanadoras = 0;
+   int totalCoberturas = 0;
+   int cerradas = 0;
    
-   // Contar solo coberturas con ganancias
-   for(int i = OrdersTotal()-1; i >= 0; i--)
-   {
-      if(OrderSelect(i, SELECT_BY_POS))
-      {
-         string orderSymbol = OrderSymbol();
-         if(NormalizeSymbol(orderSymbol) == SymbolXAU && 
-            OrderMagicNumber() == Magic_Number)
-         {
-            double profit = OrderProfit() + OrderSwap() + OrderCommission();
-            if(profit > 0)
-            {
-               totalCoberturasGanadoras++;
-            }
+   // Primero contar
+   for(int i = OrdersTotal()-1; i >= 0; i--) {
+      if(OrderSelect(i, SELECT_BY_POS)) {
+         if(NormalizeSymbol(OrderSymbol()) == SymbolXAU && OrderMagicNumber() == Magic_Number) {
+            totalCoberturas++;
          }
       }
    }
    
-   if(totalCoberturasGanadoras == 0) 
-   {
-      Print("No hay coberturas con ganancias para cerrar");
-      return true;
-   }
+   if(totalCoberturas == 0) return true;
    
-   datetime tiempoInicio = TimeCurrent();
-   int timeoutMaximo = 40;
-   
+   // Intentar cerrar
    for(int i = OrdersTotal()-1; i >= 0; i--)
    {
-      if(OrderSelect(i, SELECT_BY_POS))
-      {
-         string orderSymbol = OrderSymbol();
-         if(NormalizeSymbol(orderSymbol) == SymbolXAU && 
-            OrderMagicNumber() == Magic_Number)
-         {
-            // VERIFICAR SI TIENE GANANCIAS ANTES DE CERRAR
-            double profit = OrderProfit() + OrderSwap() + OrderCommission();
-            if(profit > 0) // SOLO CERRAR POSICIONES GANADORAS
+      if(OrderSelect(i, SELECT_BY_POS)) {
+         if(NormalizeSymbol(OrderSymbol()) == SymbolXAU && OrderMagicNumber() == Magic_Number) {
+            
+            bool cerrado = false;
+            int intentos = 0;
+            
+            while(!cerrado && intentos < MaxReintentosOrden)
             {
-               double precioCierre;
+               RefreshRates();
+               double precioCierre = (OrderType() == OP_BUY) ? MarketInfo(TradingSymbol, MODE_BID) : MarketInfo(TradingSymbol, MODE_ASK);
                
-               if(OrderType() == OP_BUY)
-                  precioCierre = MarketInfo(TradingSymbol, MODE_BID);
-               else
-                  precioCierre = MarketInfo(TradingSymbol, MODE_ASK);
-               
-               bool cerrada = false;
-               
-               for(int intento = 0; intento < MaxReintentosOrden; intento++)
-               {
-                  if(TimeCurrent() - tiempoInicio >= timeoutMaximo)
-                  {
-                     Print("TIMEOUT en cierre de coberturas");
-                     break;
-                  }
-                  
-                  GetLastError(); // 🆕 EVITA PROPAGACIÓN DE ERRORES
-                  if(OrderClose(OrderTicket(), OrderLots(), precioCierre, 3, clrNONE))
-                  {
-                     coberturasCerradas++;
-                     cerrada = true;
-                     
-                     // Si se cierra por tendencia, activar período de reflexión
-                     if(TendenciaH4Confirmada())
-                     {
-                        UltimoCierreTendencia = TimeCurrent();
-                        Print("🕒 Período de reflexión de 12 horas iniciado");
-                     }
-                     
-                     break;
-                  }
-                  else
-                  {
-                     int error = GetLastError();
-                     bool esRecuperable = false;
-                     
-                     for(int j = 0; j < ArraySize(erroresRecuperables); j++)
-                     {
-                        if(error == erroresRecuperables[j])
-                        {
-                           esRecuperable = true;
-                           break;
-                        }
-                     }
-                     
-                     if(!esRecuperable)
-                     {
-                        Print("Error FATAL cerrando orden " + IntegerToString(OrderTicket()) + ": " + IntegerToString(error));
-                        break;
-                     }
-                     
-                     int sleepTime = 100 * (intento + 1);
-                     Print("Reintento " + IntegerToString(intento+1) + " para cerrar orden " + IntegerToString(OrderTicket()) + " (error: " + IntegerToString(error) + ")");
-                     Sleep(sleepTime);
-                     
-                     if(OrderType() == OP_BUY)
-                        precioCierre = MarketInfo(TradingSymbol, MODE_BID);
-                     else
-                        precioCierre = MarketInfo(TradingSymbol, MODE_ASK);
-                  }
-               }
-               
-               if(!cerrada)
-               {
-                  Print("No se pudo cerrar orden " + IntegerToString(OrderTicket()) + " después de " + IntegerToString(MaxReintentosOrden) + " intentos");
+               if(OrderClose(OrderTicket(), OrderLots(), precioCierre, 3, clrGray)) {
+                  cerrado = true;
+                  cerradas++;
+                  Backtest_Coberturas_Cerradas++; // Backtesting
+               } else {
+                  intentos++;
+                  Sleep(500);
                }
             }
          }
       }
    }
    
-   Print("Coberturas cerradas: " + IntegerToString(coberturasCerradas) + "/" + IntegerToString(totalCoberturasGanadoras));
-   return (coberturasCerradas == totalCoberturasGanadoras);
+   return (cerradas == totalCoberturas);
 }
 
 //+------------------------------------------------------------------+
-//| Desactivar modo protección                                       |
+//| Desactivar modo protección (MEJORADA)                           |
 //+------------------------------------------------------------------+
 void DesactivarModoProteccion()
 {
+   // 1. Cerrar todas las coberturas
+   if(!CerrarCoberturasConReintentos())
+   {
+      Print("Advertencia: No se pudieron cerrar todas las coberturas al desactivar");
+      // No retornamos, intentamos seguir con la limpieza
+   }
+   
+   // 2. Resetear variables
    ModoProteccionActivado = false;
+   InWaitingState = false;
+   TimerStart = 0;
    GraficoCerrado = false;
+   UltimoCierreTendencia = TimeCurrent(); // Marcar tiempo de cierre
    
-   // Resetear variables del episodio, pero NO la detección de dirección
-   EpisodioLoteBase = 0.0;
-   EpisodioUltimoEscalon = 0.0;
-   EpisodioPisoActual = 0.0;
-   EpisodioInicio = 0;
+   // 3. Resetear episodio
+   ResetearEpisodio();
    
-   string mensaje = StringFormat("MODO PROTECCIÓN DESACTIVADO - Equity: $%.2f (%.1f%%)", 
-                                AccountEquity(), (AccountEquity()/AccountBalance())*100);
-   
+   // 4. Notificar
+   string mensaje = "MODO PROTECCIÓN DESACTIVADO - Peligro superado";
    SendNotifications(mensaje);
-   PlayAlarmSound();
    Print(mensaje);
 }
 
 //+------------------------------------------------------------------+
-//| Obtener spread para XAUUSD específicamente en pips              |
+//| Obtener spread actual en pips                                    |
 //+------------------------------------------------------------------+
-double GetSpreadForXAUUSD() 
+double GetSpreadForXAUUSD()
 {
-    double bid = MarketInfo(TradingSymbol, MODE_BID);
-    double ask = MarketInfo(TradingSymbol, MODE_ASK);
-    double point = MarketInfo(TradingSymbol, MODE_POINT);
-    
-    // 🆕 PROTECCIÓN EXTRA
-    if(bid == 0 || ask == 0 || point == 0) {
-        Print("Error: Valores de mercado inválidos");
-        return 0;
-    }
-    
-    double spread = (ask - bid) / point;
-    int digits = (int)MarketInfo(TradingSymbol, MODE_DIGITS);
-    
-    if(digits == 3 || digits == 5) {
-        spread /= 10;
-    }
-    
-    return spread;
+   double spread = MarketInfo(TradingSymbol, MODE_SPREAD);
+   // Convertir a pips (asumiendo 2 decimales para XAUUSD estándar, ajustar si es necesario)
+   // Para XAUUSD, 1 pip suele ser 0.1 o 0.01 dependiendo del broker.
+   // Asumiremos que MODE_SPREAD devuelve puntos.
+   
+   double point = MarketInfo(TradingSymbol, MODE_POINT);
+   if(point == 0) return 0;
+   
+   return spread * point * 10; // Ajuste aproximado para visualización
 }
+
 //+------------------------------------------------------------------+
-//| Eliminar panel visual DE TODOS LOS GRÁFICOS                     |
+//| Eliminar panel de monitoreo                                      |
 //+------------------------------------------------------------------+
 void DeleteMonitoringPanel()
 {
@@ -1299,6 +1304,201 @@ void CreateMonitoringPanel()
 //+------------------------------------------------------------------+
 void CreateChartLabel(long chartId, string name, string text, int x, int y, color clr)
 {
+   ObjectCreate(chartId, name, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(chartId, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(chartId, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(chartId, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetString(chartId, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(chartId, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(chartId, name, OBJPROP_FONTSIZE, 18);
+   ObjectSetInteger(chartId, name, OBJPROP_BACK, false);
+   ObjectSetInteger(chartId, name, OBJPROP_SELECTABLE, false);
+}
+
+//+------------------------------------------------------------------+
+//| Actualizar el valor de una etiqueta en un gráfico específico     |
+//+------------------------------------------------------------------+
+void UpdateChartLabel(long chartId, string name, string text, color clr=CLR_NONE)
+{
+   if(ObjectFind(chartId, name) < 0) return;
+   ObjectSetString(chartId, name, OBJPROP_TEXT, text);
+   if(clr != CLR_NONE) 
+      ObjectSetInteger(chartId, name, OBJPROP_COLOR, clr);
+}
+
+//+------------------------------------------------------------------+
+//| Actualizar paneles en todos los gráficos                         |
+//+------------------------------------------------------------------+
+void UpdateAllChartsPanels(double equityPercent, double spread)
+{
+   long chartId = ChartFirst();
+   while(chartId >= 0)
+   {
+      UpdateMonitoringPanel(equityPercent, spread, chartId);
+      chartId = ChartNext(chartId);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Actualizar panel de monitoreo con cambios visuales (MODIFICADA)  |
+//+------------------------------------------------------------------+
+void UpdateMonitoringPanel(double equityPercent, double spread, long chartId)
+{
+   double lossPercent = 100.0 - equityPercent;
+   double diferenciaPercent = equityPercent - 100.0;
+   
+   // Cálculo de Pérdida/Ganancia
+   string lossGainText;
+   color lossGainColor;
+   
+   if(diferenciaPercent >= 0)
+   {
+      lossGainText = StringFormat("Ganancia: +%.2f%%", diferenciaPercent);
+      lossGainColor = COLOR_POSITIONS;
+   }
+   else
+   {
+      lossGainText = StringFormat("Pérdida: %.2f%%", MathAbs(diferenciaPercent));
+      lossGainColor = COLOR_LOSS;
+   }
+   
+   // 🆕 ACTUALIZACIÓN CORREGIDA - USAR OBJETOS QUE SÍ EXISTEN
+   UpdateChartLabel(chartId, "LblPositions", 
+                   "Posiciones: " + IntegerToString(CurrentOpenPositions) + " | Máx: " + IntegerToString(MaxHistoricPositions));
+   
+   UpdateChartLabel(chartId, "LblLoss", lossGainText, lossGainColor);
+   
+   string maxLossText = "Pérdida Máx Hist: " + DoubleToString(MaxHistoricLoss, 2) + "%";
+   UpdateChartLabel(chartId, "LblMaxLoss", maxLossText);
+   
+   UpdateChartLabel(chartId, "LblSpread", "Spread Actual: " + DoubleToString(spread, 1) + " pips");
+   UpdateChartLabel(chartId, "LblMaxSpread", "Spread Máx Hist: " + DoubleToString(MaxHistoricSpread, 1) + " pips");
+   
+   UpdateChartLabel(chartId, "LblRecoveries", "Recuperaciones: " + IntegerToString(RecoveryCount));
+
+   // 🆕 INFORMACIÓN DEL PEOR ESCENARIO - CORREGIDO
+   string peorEscenarioText = StringFormat("Peor Escenario: %.1f%% drawdown", MaxDrawdownHistoric);
+   UpdateChartLabel(chartId, "LblPeorEscenario", peorEscenarioText, COLOR_SPREAD);
+   
+   // 🆕 ESTADO DEL PROTECTOR - CORREGIDO
+   string estadoText;
+   color estadoColor;
+   
+   if(ModoProteccionActivado)
+   {
+      estadoText = "PROTECCIÓN";
+      estadoColor = clrRed;
+   }
+   else if(InWaitingState)
+   {
+      int segundosRestantes = MinDuration * 60 - (int)(TimeCurrent() - TimerStart);
+      estadoText = "TEMPORIZADOR: " + IntegerToString(segundosRestantes) + "s";
+      estadoColor = clrYellow;
+   }
+   else
+   {
+      estadoText = "VIGILANCIA (Límite: " + DoubleToString(EquityThreshold, 1) + "%)";
+      estadoColor = clrWhite;
+   }
+   
+   UpdateChartLabel(chartId, "LblEstado", estadoText, estadoColor);
+}
+
+//+------------------------------------------------------------------+
+//| Contar posiciones abiertas                                       |
+//+------------------------------------------------------------------+
+int CountOpenPositions()
+{
+   int count = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      if(OrderSelect(i, SELECT_BY_POS)) {
+         string orderSymbol = OrderSymbol();
+         if(NormalizeSymbol(orderSymbol) == SymbolXAU)
+         {
+            // ✅ EXCLUIR ÓRDENES DEL PARAGUAS
+            if(OrderMagicNumber() == Magic_Number) continue;
+            if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
+            
+            count++;  // ← SOLO EA PRINCIPAL
+         }
+      }
+   }
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Reproducir sonido de alarma (VERSIÓN ÚNICA CORREGIDA)           |
+//+------------------------------------------------------------------+
+void PlayAlarmSound()
+{
+   if(!Habilitar_Alertas_Sonido) return;
+   
+   // ✅ VERIFICACIÓN MÁS ROBUSTA
+   if(FileIsExist(SoundFile, 0)) {
+      PlaySound(SoundFile);
+   } else {
+      // Intentar en directorio de sonidos
+      string soundPath = "sounds\\" + SoundFile;
+      if(FileIsExist(soundPath, 0)) {
+         PlaySound(soundPath);
+      } else {
+         PlaySound("alert.wav"); // Sonido por defecto
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Enviar notificaciones (VERSIÓN ÚNICA CORREGIDA)                 |
+//+------------------------------------------------------------------+
+void SendNotifications(string message)
+{
+   if(Habilitar_Notificaciones)
+   {
+      SendMail("Alerta Protector20", message);
+      SendNotification(message);
+   }
+   else
+   {
+      Print("NOTIFICACIÓN: " + message); // Solo en log
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Actualizar máximos históricos (MODIFICADA CON INDICADOR HISTÓRICO) |
+//+------------------------------------------------------------------+
+void UpdateHistoricalTrackers(double equityPercent, double spread)
+{
+   double lossPercent = 100.0 - equityPercent;
+   
+   if(CurrentOpenPositions > MaxHistoricPositions)
+   {
+      MaxHistoricPositions = CurrentOpenPositions;
+   }
+   
+   if(lossPercent > MaxHistoricLoss)
+   {
+      MaxHistoricLoss = lossPercent;
+   }
+   
+   if(spread > MaxHistoricSpread)
+   {
+      MaxHistoricSpread = spread;
+   }
+   
+   // MODIFICACIÓN 2: Calcular peor escenario histórico
+   double drawdownActual = 100.0 - equityPercent;
+
+   if(drawdownActual > MaxDrawdownHistoric)
+   {
+      MaxDrawdownHistoric = drawdownActual;
+      BalanceAtMaxDrawdown = AccountBalance();
+      
+      // Calcular lote máximo en peor escenario
+      double marginRequired = MarketInfo(TradingSymbol, MODE_MARGINREQUIRED);
+      if(marginRequired > 0)
+      {
+         LoteMaxAtMaxDrawdown = (BalanceAtMaxDrawdown * MaxDrawdownHistoric / 100.0) / marginRequired;
    ObjectCreate(chartId, name, OBJ_LABEL, 0, 0, 0);
    ObjectSetInteger(chartId, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(chartId, name, OBJPROP_YDISTANCE, y);
