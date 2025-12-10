@@ -9,7 +9,7 @@
 #property strict
 
 // Parámetros configurables
-input double   EquityThreshold = 60.0   // % de equity sobre balance para activación
+input double   EquityThreshold = 85.0;    // % de equity sobre balance para activación
 input int      MinDuration = 3;           // Minutos de persistencia para activación
 input double   MaxSpread = 25.0;          // Spread máximo en pips para display
 input int      Magic_Number = 3030;       // Magic number para las órdenes del protector
@@ -769,31 +769,27 @@ void GestionarResetDeteccion()
 // Llamar esta función en OnTick() y OnTimer()
 
 //+------------------------------------------------------------------+
-//| Calcular lote híbrido adaptativo (CORREGIDA)                    |
+//| Calcular lote simplificado (Solo Posiciones)                     |
 //+------------------------------------------------------------------+
 void CalcularLoteInicial()
 {   
+   // 1. Obtener el conteo de posiciones del EA principal
    int totalPosiciones = CountPrincipalPositions();
    
-   double lotePorPosiciones = totalPosiciones * FactorPosiciones;
-   double equity = AccountEquity();
-   double marginRequired = MarketInfo(TradingSymbol, MODE_MARGINREQUIRED);
-   double lotePorEquity = LoteMinimo;
-   
-   if(marginRequired > 0.001)
-      lotePorEquity = (equity * FactorEquity) / marginRequired;
-   else
-      Print("⚠️  Margen requerido es cero o muy bajo. Usando lote mínimo.");
+   // 2. Calcular el lote basado en el factor de posiciones
+   // FactorPosiciones es el multiplicador por posición (input double FactorPosiciones = 0.001;)
+   double loteCalculado = totalPosiciones * FactorPosiciones;
 
-   // 🆕 CÁLCULO DEL LOTE FINAL
-   double loteCalculado = MathMax(lotePorPosiciones, lotePorEquity);
+   // 3. Aplicar límites (Máximo y Mínimo)
+   // LoteMaximo y LoteMinimo son parámetros de entrada
    loteCalculado = MathMin(loteCalculado, LoteMaximo);
    loteCalculado = MathMax(loteCalculado, LoteMinimo);
    
+   // 4. Asignar el lote fijo (asegurar 2 decimales para la mayoría de los brokers)
    LoteFijo = NormalizeDouble(loteCalculado, 2);
    
-   Print(StringFormat("Lote calculado: %.3f (Pos: %.3f, Equity: %.3f)", 
-                     LoteFijo, lotePorPosiciones, lotePorEquity));
+   Print(StringFormat("Lote fijo calculado (Solo Posiciones): %.3f (Total Posiciones Principal: %d)", 
+                     LoteFijo, totalPosiciones));
 }
 
 //+------------------------------------------------------------------+
