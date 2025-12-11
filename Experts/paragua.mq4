@@ -59,6 +59,11 @@ double         UltimoEscalon = 0.0;
 double         PisoActual = 0.0;
 bool           GraficoCerrado = false;
 
+// --- NUEVAS VARIABLES PARA LÓGICA DE CIERRE REGULADO ---
+double         LoteInicialPrincipal = 0.0; // Lote total del Principal al 100% de la activación
+bool           BloqueoAperturasActivo = false; // Bandera que indica el inicio de la fase de cierre
+int            LadoCierreSiguiente = OP_BUY;   // -1: Principal (Inicial), OP_BUY/OP_SELL: Dirección a cerrar
+
 // Variables de episodio
 int            EpisodioDireccion = -1;
 double         EpisodioLoteBase = 0.0;
@@ -284,37 +289,58 @@ bool IsXAUUSDChartOpen()
    return (chartsFound > 0);
 }
 
+//+------------------------------------------------------------------+
+//| Función de activación del modo protección                        |
+//+------------------------------------------------------------------+
 void ActivarModoProteccion()
 {
    if(ModoProteccionActivado) return;
-
+   
+   // AÑADIR REGISTRO DE LOTE INICIAL (100% DE LA CARGA P%)
+   LoteInicialPrincipal = GetPrincipalTotalLot();
+   if (LoteInicialPrincipal <= 0.0) {
+      Print("Error: No se puede activar protección, Lote Principal es cero.");
+      return;
+   }
+   
+   // 1. Detección de dirección
    if(!DireccionDetectada)
    {
       if(!DetectarDireccionEAPrincipal()) return;
    }
    
+   // 2. Definición del inicio del cierre
+   // El primer cierre siempre debe ser del Principal (Peso)
+   LadoCierreSiguiente = DireccionEAPrincipal;
+   
+   // 3. Cierre de gráficos
    if(IsXAUUSDChartOpen())
    {
       if(!CerrarGraficoXAUUSDConReintentos()) return;
    }
    
+   // 4. Cálculo de lote de cobertura (versión simplificada)
    CalcularLoteInicial();
    
+   // 5. Registro de piso de Equity
    double equity = AccountEquity();
    double balance = AccountBalance();
    PisoActual = (balance > 0) ? (equity / balance) * 100.0 : 100.0;
    UltimoEscalon = PisoActual;
    
+   // 6. Guardar estado del episodio
    GuardarEpisodio();
    
+   // 7. Abrir primera cobertura
    if(!AbrirCoberturaConReintentos()) return;
    
+   // 8. Finalizar activación
    ModoProteccionActivado = true;
    InWaitingState = false;
    TimerStart = 0;
    GraficoCerrado = true;
    
-   // ✅ INICIALIZAR CONTADOR DE SERIE
+   // INICIALIZAR CONTADOR DE SERIE
    ConteoOrdenesSerie = 1; 
    
    string direccion = (DireccionEAPrincipal == OP_BUY) ? "BUY" : "SELL";
@@ -369,6 +395,165 @@ int CountPrincipalPositions()
 }
 
 //+------------------------------------------------------------------+
+//| Obtener Lote Total Abierto del EA PRINCIPAL                      |
+//| (Todo MENOS Magic 3030)                                          |
+//+------------------------------------------------------------------+
+double GetPrincipalTotalLot()
+{
+   double totalLot = 0.0;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      if(OrderSelect(i, SELECT_BY_POS)) {
+         string orderSymbol = OrderSymbol();
+         if(NormalizeSymbol(orderSymbol) == SymbolXAU)
+         {
+            // Ignorar mis propias órdenes de cobertura
+            if(OrderMagicNumber() == Magic_Number) continue;
+            if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
+            
+            totalLot += OrderLots(); // Sumar el lote
+         }
+      }
+   }
+   return totalLot;
+}
+
+//+------------------------------------------------------------------+
+//| Obtener Lote Total Abierto del PROTECTOR (Magic 3030)            |
+//+------------------------------------------------------------------+
+double GetParaguaTotalLot()
+{
+   double totalLot = 0.0;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      if(OrderSelect(i, SELECT_BY_POS)) {
+         string orderSymbol = OrderSymbol();
+         if(NormalizeSymbol(orderSymbol) == SymbolXAU)
+         {
+            // SOLO órdenes del protector (Magic Number)
+            if(OrderMagicNumber() == Magic_Number) 
+               totalLot += OrderLots(); // Sumar el lote
+         }
+      }
+   }
+   return totalLot;
+}
+
+//+------------------------------------------------------------------+
+//| Obtener Drawdown máximo histórico del episodio                   |
+//+------------------------------------------------------------------+
+double GetMaxDrawdown()
+{
+    // Esta función asume que MaxDrawdownHistoric ya se actualiza en UpdateHistoricalTrackers.
+    // Aquí, se calcula el Drawdown actual del episodio para compararlo.
+    double equity = AccountEquity();
+    double balance = AccountBalance();
+    
+    if (balance <= 0) return 0.0;
+    
+    // Asumimos que el Drawdown es relativo al Balance, no al equity.
+    // El máximo drawdown histórico ya se registra. 
+    // Para el cálculo de la recuperación, necesitamos el balance inicial (si fuera un sistema cerrado)
+    // Pero usaremos MaxDrawdownHistoric (la máxima pérdida en %) para la comparación.
+    
+    // Usaremos la variable global MaxDrawdownHistoric para el punto de referencia.
+    // Devolveremos la diferencia entre el Drawdown Máximo Histórico y el Drawdown Actual.
+    
+    double drawdownActual = 100.0 - (equity / balance) * 100.0;
+    
+    // Si el DD actual es mucho menor que el DD histórico máximo, hay recuperación.
+    if (MaxDrawdownHistoric > 0.0) {
+        // Devolver cuánto hemos recuperado *relativo al peor momento*.
+        return MaxDrawdownHistoric - drawdownActual;
+    }
+    return 0.0;
+}
+
+//+------------------------------------------------------------------+
+//| Verificar PnL Flotante Parcial de un Lote Específico             |
+//+------------------------------------------------------------------+
+double GetPartialProfit(int type, double lotToClose)
+{
+    double currentProfit = 0.0;
+    double lotCount = 0.0;
+    
+    // 1. ITERAR POSICIONES DEL LADO REQUERIDO
+    for(int i = OrdersTotal()-1; i >= 0; i--)
+    {
+        if(OrderSelect(i, SELECT_BY_POS)) {
+            // Filtrar por símbolo y tipo de orden
+            if(NormalizeSymbol(OrderSymbol()) == SymbolXAU && OrderType() == type)
+            {
+                double lot = OrderLots();
+                
+                // 2. Acumular PnL y Lote hasta alcanzar el lote objetivo (lotToClose)
+                if (lotCount + lot <= lotToClose)
+                {
+                    currentProfit += OrderProfit();
+                    lotCount += lot;
+                }
+                else if (lotCount < lotToClose)
+                {
+                    // Si la última orden excede el lote objetivo, estimar el PnL parcial.
+                    // Esto es complejo sin Ticket. Por simplicidad, tomaremos las órdenes más grandes o más nuevas
+                    // hasta que se cubra el lote objetivo.
+                    // En este caso, simplemente pararemos en la primera orden que haga que lotCount >= lotToClose
+                    // y sumaremos el PnL de esa orden completa para simplificar la estimación.
+                    currentProfit += OrderProfit();
+                    lotCount += lot;
+                }
+            }
+        }
+    }
+    
+    // Devuelve el PnL de la porción más cercana al lote objetivo (puede ser ligeramente mayor)
+    return currentProfit;
+}
+
+//+------------------------------------------------------------------+
+//| Criterio de Giro del Estocástico M1 (Pérdida de Impulso)         |
+//+------------------------------------------------------------------+
+bool CheckStochasticM1Reversal(int direction) 
+{
+    // Usamos Stocástico (5, 3, 3) en M1.
+    int periodK = 5;
+    int periodD = 3;
+    int slowing = 3;
+    int ma_method = MODE_SMA;
+    
+    // CORRECCIÓN FINAL: Usar el valor entero 0 (que representa MODE_CLOSE) para compatibilidad con compiladores MQL4.
+    const int PRICE_FIELD = 0; 
+    
+    // Valores de la barra actual (index 0) y anterior (index 1)
+    double mainLine_0 = iStochastic(NULL, PERIOD_M1, periodK, periodD, slowing, ma_method, PRICE_FIELD, MODE_MAIN, 0);
+    double signalLine_0 = iStochastic(NULL, PERIOD_M1, periodK, periodD, slowing, ma_method, PRICE_FIELD, MODE_SIGNAL, 0);
+    double mainLine_1 = iStochastic(NULL, PERIOD_M1, periodK, periodD, slowing, ma_method, PRICE_FIELD, MODE_MAIN, 1);
+    double signalLine_1 = iStochastic(NULL, PERIOD_M1, periodK, periodD, slowing, ma_method, PRICE_FIELD, MODE_SIGNAL, 1);
+    
+    // Si vamos a cerrar un BUY (el Principal es BUY), buscamos un cruce BAJISTA desde Sobrecompra (arriba de 80)
+    if (direction == OP_BUY) {
+        // Cruce: Línea principal (K) cruza la línea de señal (D) hacia abajo
+        bool crossDown = (mainLine_1 > signalLine_1) && (mainLine_0 < signalLine_0);
+        // Condición de Sobrecompra: Debe estar cerca del extremo
+        bool overbought = (mainLine_1 >= 80.0);
+        
+        return crossDown && overbought;
+    }
+    
+    // Si vamos a cerrar un SELL (el Principal es SELL), buscamos un cruce ALCISTA desde Sobreventa (abajo de 20)
+    if (direction == OP_SELL) {
+        // Cruce: Línea principal (K) cruza la línea de señal (D) hacia arriba
+        bool crossUp = (mainLine_1 < signalLine_1) && (mainLine_0 > signalLine_0);
+        // Condición de Sobreventa: Debe estar cerca del extremo
+        bool oversold = (mainLine_1 <= 20.0);
+        
+        return crossUp && oversold;
+    }
+    
+    return false;
+}
+
+//+------------------------------------------------------------------+
 //| Calcular distancia requerida según la serie actual               |
 //+------------------------------------------------------------------+
 double ObtenerDistanciaProximoEscalon()
@@ -390,54 +575,147 @@ double ObtenerDistanciaProximoEscalon()
 }
 
 //+------------------------------------------------------------------+
-//| Gestionar modo protección (MODIFICADA: SERIES + HARD CAP)        |
+//| Gestionar modo protección (INCLUYE BLOQUEO Y CIERRE REGULADO)    |
 //+------------------------------------------------------------------+
 void ManageProtectionMode(double equityPercent)
 {
    // 1. HARD CAP (Límite Global de Inventario)
-   // Cuenta SOLO posiciones del Paragua. Si hay 11, se bloquea.
    if(CountParaguaPositions() >= MAX_POSICIONES_TOTAL)
    {
-      return;
+      BloqueoAperturasActivo = true; // Forzar bloqueo si se alcanza el límite duro
+      // Aún así, intentamos cerrar si hay oportunidad.
    }
 
-   // 2. Obtener distancia requerida según el paso de la serie
-   double distanciaRequerida = ObtenerDistanciaProximoEscalon();
+   // --- LÓGICA DE BLOQUEO DE APERTURAS ---
+   if (!BloqueoAperturasActivo) {
+       
+       double loteActualPrincipal = GetPrincipalTotalLot();
+       double porcentajeRestanteP = (LoteInicialPrincipal > 0.0) ? (loteActualPrincipal / LoteInicialPrincipal) * 100.0 : 100.0;
+       
+       // Bloquear si se alcanza el límite duro O si el Principal ha reducido su carga en 35% (65% restante)
+       if (CountParaguaPositions() >= MAX_POSICIONES_TOTAL || porcentajeRestanteP <= 65.0) {
+           BloqueoAperturasActivo = true;
+           Print("🔒 BLOQUEO DE APERTURAS ACTIVO. Inicio de fase de cierre regulado.");
+       }
+   }
    
-   // 3. Verificar si el precio cayó la distancia requerida
-   if(equityPercent <= UltimoEscalon - distanciaRequerida)
+   // --- APERTURA DE COBERTURAS (SOLO SI NO ESTÁ BLOQUEADO) ---
+   if (!BloqueoAperturasActivo)
    {
-      if(AbrirCoberturaConReintentos())
-      {
-         // Actualizar escalón y contador de serie
-         UltimoEscalon = UltimoEscalon - distanciaRequerida;
-         ConteoOrdenesSerie++; // Avanzamos un paso en la secuencia
-         
-         Print(StringFormat("Nueva cobertura (Paso Serie: %d) - Distancia: %.1f%% - Nuevo Escalón: %.2f%%", 
-                           ConteoOrdenesSerie, distanciaRequerida, UltimoEscalon));
-      }
+       // Obtener distancia requerida según el paso de la serie
+       double distanciaRequerida = ObtenerDistanciaProximoEscalon();
+       
+       // Verificar si el precio cayó la distancia requerida
+       if(equityPercent <= UltimoEscalon - distanciaRequerida)
+       {
+          if(AbrirCoberturaConReintentos())
+          {
+             UltimoEscalon = UltimoEscalon - distanciaRequerida;
+             ConteoOrdenesSerie++; // Avanzamos un paso en la secuencia
+             Print(StringFormat("Nueva cobertura (Paso Serie: %d) - Distancia: %.1f%% - Nuevo Escalón: %.2f%%", 
+                               ConteoOrdenesSerie, distanciaRequerida, UltimoEscalon));
+          }
+       }
+       return; // Sale si sigue abriendo coberturas
+   }
+   
+   // --- CIERRE REGULADO (SOLO SI ESTÁ BLOQUEADO) ---
+   if (BloqueoAperturasActivo) {
+       GestionarCierreRegulado();
    }
 }
 
 //+------------------------------------------------------------------+
-//| Activar plan B (VERSIÓN LIMPIA)                                 |
+//| Gestión de Cierre Secuencial y Regulado por Límite del 35%       |
 //+------------------------------------------------------------------+
-void ActivarPlanB()
+void GestionarCierreRegulado()
 {
-   string mensaje = "PLAN B ACTIVADO - Fallo crítico en el sistema";
-   SendNotifications(mensaje);
-   Alert(mensaje);
-   
-   // Desactivar modo protección COMPLETAMENTE
-   ModoProteccionActivado = false;
-   InWaitingState = false;
-   TimerStart = 0;
-   GraficoCerrado = false;
-   
-   // Resetear episodio
-   ResetearEpisodio();
-   
-   Print("MODO PROTECCIÓN DESACTIVADO POR FALLO CRÍTICO - Intervención manual requerida");
+    double loteActualPrincipal = GetPrincipalTotalLot();
+    double loteActualParagua = GetParaguaTotalLot(); // CORRECCIÓN: Usar la nueva función
+    
+    // Obtener las cargas de riesgo relativas (P% y C%)
+    double p_percent = (LoteInicialPrincipal > 0.0) ?
+        (loteActualPrincipal / LoteInicialPrincipal) * 100.0 : 0.0;
+    
+    // El 100% de la carga del Protector es LoteFijo * 10.0
+    double c_max_lot = LoteFijo * 10.0;
+    double c_percent = (c_max_lot > 0.0) ? (loteActualParagua / c_max_lot) * 100.0 : 0.0;
+    
+    // 1. DETERMINAR EL LADO A CERRAR Y EL LOTE MÁXIMO PERMITIDO (Delta L max)
+    int targetDirection; // Dirección de la orden a cerrar (OP_BUY o OP_SELL)
+    double currentLotToClose = 0.0;
+    
+    // Primero, chequear si es el primer ciclo de cierre. Si es así, forzar Principal.
+    if (LadoCierreSiguiente == DireccionEAPrincipal) {
+        
+        // Cierre Principal (Peso)
+        targetDirection = DireccionEAPrincipal;
+        
+        // Calcular P_min permitido: C_actual - 35%
+        double p_min_allowed = MathMax(0.0, c_percent - 35.0);
+        currentLotToClose = (p_percent - p_min_allowed) * (LoteInicialPrincipal / 100.0);
+        
+        // Asegurar que cerramos al menos el lote más pequeño (.01)
+        currentLotToClose = MathMax(currentLotToClose, LoteMinimo);
+        
+    } else { // LadoCierreSiguiente es la dirección opuesta (Protector)
+        
+        // Cierre Protector (Contrapeso)
+        targetDirection = (DireccionEAPrincipal == OP_BUY) ? OP_SELL : OP_BUY;
+        
+        // Calcular C_min permitido: P_actual - 35%
+        double c_min_allowed_percent = MathMax(0.0, p_percent - 35.0);
+        
+        // Calcular el número mínimo de unidades de cobertura que DEBEN quedar (C_min_allowed_percent)
+        int min_units_remaining = (int)MathCeil(c_min_allowed_percent / 10.0);
+        
+        // El lote a cerrar es el lote de las unidades que se pueden quitar
+        currentLotToClose = (CountParaguaPositions() - min_units_remaining) * LoteFijo;
+        
+        // Si currentLotToClose es menor que LoteFijo, no se puede cerrar nada (discreción)
+        if (currentLotToClose < LoteFijo) {
+            currentLotToClose = 0.0;
+        }
+    }
+    
+    // 2. VERIFICAR CONDICIONES DE EJECUCIÓN (PnL y Stochastic)
+    if (currentLotToClose > 0.0) {
+        
+        // A. PnL Parcial
+        double partialProfit = GetPartialProfit(targetDirection, currentLotToClose);
+        
+        // B. Criterio de Giro M1
+        double directionToCheck = (targetDirection == DireccionEAPrincipal) ? DireccionEAPrincipal : DireccionEAPrincipal;
+        bool reversalDetected = CheckStochasticM1Reversal(targetDirection);
+        
+        // C. Filtro Global (Recuperación)
+        bool recoveryAchieved = (GetMaxDrawdown() >= 0.0); // Se ha recuperado al menos el DD máximo
+        
+        if (recoveryAchieved && (partialProfit >= 0.10) && reversalDetected)
+        {
+            // --- EJECUCIÓN DEL CIERRE ---
+            if (ClosePartialLot(targetDirection, currentLotToClose)) {
+                
+                // 3. ACTUALIZAR ESTADO DE SECUENCIA
+                // Alternamos el lado de cierre para el próximo ciclo.
+                if (LadoCierreSiguiente == DireccionEAPrincipal) {
+                    LadoCierreSiguiente = (DireccionEAPrincipal == OP_BUY) ? OP_SELL : OP_BUY; // Siguiente es Protector
+                } else {
+                    LadoCierreSiguiente = DireccionEAPrincipal; // Siguiente es Principal
+                }
+                
+                Print(StringFormat("✅ CIERRE REGULADO: %s | Lote: %.3f | PnL: %.2f", 
+                                   (targetDirection == DireccionEAPrincipal) ? "Principal" : "Protector", 
+                                   currentLotToClose, partialProfit));
+            }
+        }
+    }
+    
+    // Si ambas cargas han llegado a cero, desactivar protección.
+    if (GetPrincipalTotalLot() <= 0.0 && CountParaguaPositions() == 0) {
+        DesactivarModoProteccion();
+        ResetearEpisodio();
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -899,6 +1177,56 @@ bool CerrarGraficoXAUUSDConReintentos()
    int pendientes = totalGraficos - graficosCerrados;
    Alert("❌ CRÍTICO: " + IntegerToString(pendientes) + " gráficos XAUUSD no se cerraron");
    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Ejecuta el cierre de un lote específico (Parcial o Total)        |
+//+------------------------------------------------------------------+
+bool ClosePartialLot(int type, double lotToClose)
+{
+    // Esta función debe buscar y cerrar órdenes hasta que el lote objetivo se cumpla.
+    double lotRemaining = lotToClose;
+    bool success = false;
+    
+    for(int i = OrdersTotal()-1; i >= 0; i--)
+    {
+        if(lotRemaining <= 0) break;
+        
+        if(OrderSelect(i, SELECT_BY_POS)) 
+        {
+            // Filtrar por símbolo y tipo de orden
+            if(NormalizeSymbol(OrderSymbol()) == SymbolXAU && OrderType() == type)
+            {
+                double lot = OrderLots();
+                double closeLot = MathMin(lot, lotRemaining); // Lote a cerrar en esta orden
+                
+                // Chequear si es orden de Protector o Principal
+                bool isParagua = (OrderMagicNumber() == Magic_Number);
+                
+                // Si es orden del Principal (Lado P), cerramos el lote parcial. 
+                // Si es orden del Paragua (Lado C), solo cerramos la orden completa (cierre parcial solo si closeLot == lot)
+                if (isParagua && closeLot < lot) continue; // Solo cerramos órdenes completas del Protector (Regla Discreta)
+                
+                // Ejecución del Cierre
+                for(int intento = 0; intento < MaxReintentosCierre; intento++)
+                {
+                    if(OrderClose(OrderTicket(), closeLot, OrderClosePrice(), 3, clrNONE)) 
+                    {
+                        lotRemaining -= closeLot;
+                        success = true;
+                        break;
+                    }
+                    Sleep(100);
+                }
+            }
+        }
+    }
+    
+    if (lotRemaining > 0) {
+        Print(StringFormat("⚠️ Falla al cerrar lote completo. Restante: %.3f", lotRemaining));
+    }
+    
+    return success;
 }
 
 //+------------------------------------------------------------------+
