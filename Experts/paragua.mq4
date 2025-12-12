@@ -150,8 +150,8 @@ void OnTimer()
    // Verificación de recalibración por distancia ≥10% (Trailing Floor)
    if(ModoProteccionActivado && (equityPercent - UltimoEscalon) >= 10.0)
    {
-      PisoActual = equityPercent;
-      UltimoEscalon = equityPercent;
+      PisoActual = equityPercent - 10.0;
+      UltimoEscalon = equityPercent - 10.0;
       
       // ✅ RESET DINÁMICO DE SERIES
       // El piso subió, reiniciamos la secuencia a Serie A (pero NO el inventario)
@@ -179,8 +179,8 @@ void OnTick()
    
    if(ModoProteccionActivado && (equityPercent - UltimoEscalon) >= 10.0)
    {
-      PisoActual = equityPercent;
-      UltimoEscalon = equityPercent;
+      PisoActual = equityPercent - 10.0;
+      UltimoEscalon = equityPercent - 10.0;
       
       // ✅ RESET DINÁMICO DE SERIES
       ConteoOrdenesSerie = 0;
