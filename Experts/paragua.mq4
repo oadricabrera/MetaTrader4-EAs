@@ -1501,14 +1501,16 @@ void UpdateMonitoringPanel(double equityPercent, double spread, long chartId)
    string estadoText;
    color estadoColor;
    if(ModoProteccionActivado) {
-      estadoText = "MODO PROTECCIÓN ACTIVO";
+      double pisoLoss = 100.0 - PisoActual;
+      estadoText = "PROTECCIÓN ACTIVO: "+ DoubleToString(pisoLoss, 2) + "%";
       estadoColor = clrRed;
    } else if(InWaitingState) {
       int seg = MinDuration * 60 - (int)(TimeCurrent() - TimerStart);
       estadoText = "ESPERA: " + IntegerToString(seg) + "s";
       estadoColor = clrYellow;
    } else {
-      estadoText = "VIGILANCIA";
+      double lossThreshold = 100.0 - EquityThreshold;
+      estadoText = "VIGILANCIA: "+ DoubleToString(lossThreshold, 2) + "%";
       estadoColor = clrWhite;
    }
    UpdateChartLabel(chartId, "LblEstado", estadoText, estadoColor);
