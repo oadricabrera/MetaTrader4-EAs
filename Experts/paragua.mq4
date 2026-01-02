@@ -9,7 +9,7 @@
 #property strict
 
 // Parámetros configurables
-input double   EquityThreshold = 85.0;    // % de equity sobre balance para activación
+input double   EquityThreshold = 60.0;    // % de equity sobre balance para activación
 input int      MinDuration = 3;           // Minutos de persistencia para activación
 input double   MaxSpread = 25.0;          // Spread máximo en pips para display
 input int      Magic_Number = 3030;       // Magic number para las órdenes del protector
@@ -28,7 +28,7 @@ input int      MaxReintentosCierre = 3;   // Máximo reintentos para cierre grá
 
 // --- NUEVAS VARIABLES PARA LÓGICA DE SERIES Y CONTEO ---
 int            ConteoOrdenesSerie = 0;          // Rastrea el paso de la serie (A, B, C)
-const int      MAX_POSICIONES_TOTAL = 11;       // Hard Cap de posiciones (Solo Paragua)
+const int      MAX_POSICIONES_TOTAL = 10;       // Hard Cap de posiciones (Solo Paragua)
 int            CurrentPrincipalPositions = 0;   // Para el monitor visual
 
 // Parámetros para backtesting
@@ -46,10 +46,9 @@ int            MaxHistoricPositions = 0;
 double         MaxHistoricLoss = 0.0;
 double         MaxHistoricSpread = 0.0;
 
-// MODIFICACIÓN 2: NUEVAS VARIABLES PARA EL PEOR ESCENARIO HISTÓRICO
-double         MaxDrawdownHistoric = 0.0;        // Máximo drawdown histórico en %
-double         BalanceAtMaxDrawdown = 0.0;       // Balance en el peor momento
-double         LoteMaxAtMaxDrawdown = 0.0;       // Lote máximo calculado en peor escenario
+// --- VARIABLES DE DISTANCIA ENTRE EXTREMOS ---
+double DistanciaExtremosActual = 0.0; // Distancia % actual entre P_max y P_min
+double MaxDistanciaHistorica = 0.0;   // Máximo histórico de distancia %
 
 // Nuevas variables para la lógica de cobertura
 bool           ModoProteccionActivado = false;
@@ -439,34 +438,47 @@ double GetParaguaTotalLot()
    return totalLot;
 }
 
-//+------------------------------------------------------------------+
-//| Obtener Drawdown máximo histórico del episodio                   |
-//+------------------------------------------------------------------+
-double GetMaxDrawdown()
+void CalcularDistanciaOperativa()
 {
-    // Esta función asume que MaxDrawdownHistoric ya se actualiza en UpdateHistoricalTrackers.
-    // Aquí, se calcula el Drawdown actual del episodio para compararlo.
-    double equity = AccountEquity();
-    double balance = AccountBalance();
-    
-    if (balance <= 0) return 0.0;
-    
-    // Asumimos que el Drawdown es relativo al Balance, no al equity.
-    // El máximo drawdown histórico ya se registra. 
-    // Para el cálculo de la recuperación, necesitamos el balance inicial (si fuera un sistema cerrado)
-    // Pero usaremos MaxDrawdownHistoric (la máxima pérdida en %) para la comparación.
-    
-    // Usaremos la variable global MaxDrawdownHistoric para el punto de referencia.
-    // Devolveremos la diferencia entre el Drawdown Máximo Histórico y el Drawdown Actual.
-    
-    double drawdownActual = 100.0 - (equity / balance) * 100.0;
-    
-    // Si el DD actual es mucho menor que el DD histórico máximo, hay recuperación.
-    if (MaxDrawdownHistoric > 0.0) {
-        // Devolver cuánto hemos recuperado *relativo al peor momento*.
-        return MaxDrawdownHistoric - drawdownActual;
-    }
-    return 0.0;
+   double pMax = 0.0;
+   double pMin = 0.0;
+   bool primeraOrden = true;
+
+   // Recorrer todas las órdenes abiertas del terminal 
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      if(OrderSelect(i, SELECT_BY_POS)) 
+      {
+         // Filtrar exclusivamente por el símbolo XAUUSD y excluir las órdenes del Protector (Magic 3030) 
+         if(NormalizeSymbol(OrderSymbol()) == SymbolXAU && OrderMagicNumber() != Magic_Number)
+         {
+            double precioApertura = OrderOpenPrice();
+            
+            if(primeraOrden) {
+               pMax = precioApertura;
+               pMin = precioApertura; 
+               primeraOrden = false;
+            } else {
+               if(precioApertura > pMax) pMax = precioApertura;
+               if(precioApertura < pMin) pMin = precioApertura; 
+            }
+         }
+      }
+   }
+
+   // Si se encontraron órdenes válidas, calcular el porcentaje 
+   if(!primeraOrden && pMin > 0) {
+      // Cálculo: ((Precio Máximo - Precio Mínimo) / Precio Mínimo) * 100
+      DistanciaExtremosActual = ((pMax - pMin) / pMin) * 100.0; 
+      
+      // Actualizar el máximo histórico registrado 
+      if(DistanciaExtremosActual > MaxDistanciaHistorica) {
+         MaxDistanciaHistorica = DistanciaExtremosActual;
+      }
+   } else {
+      // Si no hay órdenes del Principal, la distancia actual es cero
+      DistanciaExtremosActual = 0.0;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -688,8 +700,8 @@ void GestionarCierreRegulado()
         double directionToCheck = (targetDirection == DireccionEAPrincipal) ? DireccionEAPrincipal : DireccionEAPrincipal;
         bool reversalDetected = CheckStochasticM1Reversal(targetDirection);
         
-        // C. Filtro Global (Recuperación)
-        bool recoveryAchieved = (GetMaxDrawdown() >= 0.0); // Se ha recuperado al menos el DD máximo
+        // C. Filtro Global (Sin dependencia de Drawdown histórico)
+        bool recoveryAchieved = true; 
         
         if (recoveryAchieved && (partialProfit >= 0.10) && reversalDetected)
         {
@@ -773,77 +785,50 @@ void ResetearEpisodio()
 //+------------------------------------------------------------------+
 void LoadPersistentData()
 {
-   // 1. Inicializar con valores por defecto (Reseteo preventivo)
    RecoveryCount = 0;
    MaxHistoricPositions = 0;
    MaxHistoricLoss = 0.0;
    MaxHistoricSpread = 0.0;
-   MaxDrawdownHistoric = 0.0;
-   BalanceAtMaxDrawdown = AccountBalance();
-   LoteMaxAtMaxDrawdown = LoteMinimo;
+   DistanciaExtremosActual = 0.0;
+   MaxDistanciaHistorica = 0.0;
    
-   // Variables de episodio
    EpisodioDireccion = -1;
    EpisodioLoteBase = 0.0;
    EpisodioUltimoEscalon = 0.0;
    EpisodioPisoActual = 0.0;
    EpisodioInicio = 0;
-   
-   // ✅ NUEVO: Inicializar contador de serie
-   ConteoOrdenesSerie = 0; 
+   ConteoOrdenesSerie = 0;
 
-   // 2. Cargar Estadísticas Históricas y Contadores
    if(GlobalVariableCheck("Protector_RecoveryCount")) 
       RecoveryCount = (int)GlobalVariableGet("Protector_RecoveryCount");
-      
    if(GlobalVariableCheck("Protector_MaxPositions")) 
       MaxHistoricPositions = (int)GlobalVariableGet("Protector_MaxPositions");
-      
    if(GlobalVariableCheck("Protector_MaxLoss")) 
       MaxHistoricLoss = GlobalVariableGet("Protector_MaxLoss");
-      
    if(GlobalVariableCheck("Protector_MaxSpread")) 
       MaxHistoricSpread = GlobalVariableGet("Protector_MaxSpread");
-   
-   // Cargar Peor Escenario Histórico
-   if(GlobalVariableCheck("Protector_MaxDrawdownHistoric")) 
-      MaxDrawdownHistoric = GlobalVariableGet("Protector_MaxDrawdownHistoric");
-      
-   if(GlobalVariableCheck("Protector_BalanceAtMaxDrawdown")) 
-      BalanceAtMaxDrawdown = GlobalVariableGet("Protector_BalanceAtMaxDrawdown");
-   
-   if(GlobalVariableCheck("Protector_LoteMaxAtMaxDrawdown")) 
-      LoteMaxAtMaxDrawdown = GlobalVariableGet("Protector_LoteMaxAtMaxDrawdown");
 
-   // 3. Cargar Datos del Episodio de Protección (Si estaba activo)
+   if(GlobalVariableCheck("Protector_MaxDistancia")) 
+      MaxDistanciaHistorica = GlobalVariableGet("Protector_MaxDistancia");
+
    if(GlobalVariableCheck("Protector_EpisodioDireccion")) 
       EpisodioDireccion = (int)GlobalVariableGet("Protector_EpisodioDireccion");
-      
    if(GlobalVariableCheck("Protector_EpisodioLoteBase")) 
       EpisodioLoteBase = GlobalVariableGet("Protector_EpisodioLoteBase");
-   
    if(GlobalVariableCheck("Protector_EpisodioUltimoEscalon")) 
       EpisodioUltimoEscalon = GlobalVariableGet("Protector_EpisodioUltimoEscalon");
-      
    if(GlobalVariableCheck("Protector_EpisodioPisoActual")) 
       EpisodioPisoActual = GlobalVariableGet("Protector_EpisodioPisoActual");
-      
    if(GlobalVariableCheck("Protector_EpisodioInicio")) 
       EpisodioInicio = (datetime)GlobalVariableGet("Protector_EpisodioInicio");
-   
-   // ✅ NUEVO: Cargar el paso de la serie (A, B o C)
    if(GlobalVariableCheck("Protector_ConteoSerie"))
       ConteoOrdenesSerie = (int)GlobalVariableGet("Protector_ConteoSerie");
-      
-   // 4. Cargar Datos de Detección de Dirección del EA Principal
+
    if(GlobalVariableCheck("Protector_DireccionDetectada")) 
       DireccionDetectada = (bool)GlobalVariableGet("Protector_DireccionDetectada");
-      
    if(GlobalVariableCheck("Protector_TiempoDeteccion")) 
       TiempoDeteccion = (datetime)GlobalVariableGet("Protector_TiempoDeteccion");
-      
-   // 5. Restaurar Estado del Sistema
-   // Si hay un episodio guardado válido, reactivamos el modo protección
+
    if(EpisodioDireccion != -1 && EpisodioInicio > 0)
    {
       ModoProteccionActivado = true;
@@ -852,19 +837,13 @@ void LoadPersistentData()
       UltimoEscalon = EpisodioUltimoEscalon;
       PisoActual = EpisodioPisoActual;
       
-      Print("🔄 SISTEMA RESTAURADO: Modo Protección Activo");
-      Print(StringFormat("   - Dirección: %s", (DireccionEAPrincipal==OP_BUY ? "BUY":"SELL")));
-      Print(StringFormat("   - Piso: %.2f%%", PisoActual));
-      Print(StringFormat("   - Paso Serie: %d", ConteoOrdenesSerie));
+      Print("SISTEMA RESTAURADO: Modo Proteccion Activo");
    }
    
-   // 6. Verificación de Integridad
-   // Si hay discrepancia entre la dirección detectada y la del episodio, manda la del episodio
    if(ModoProteccionActivado && DireccionDetectada)
    {
       if(DireccionEAPrincipal != EpisodioDireccion)
       {
-         Print("⚠️ Corrigiendo inconsistencia en datos persistentes (Prioridad Episodio)");
          DireccionEAPrincipal = EpisodioDireccion;
       }
    }
@@ -875,28 +854,30 @@ void LoadPersistentData()
 //+------------------------------------------------------------------+
 void SavePersistentData()
 {
-   GlobalVariableSet("Protector_RecoveryCount", RecoveryCount);
-   GlobalVariableSet("Protector_MaxPositions", MaxHistoricPositions);
+   GlobalVariableSet("Protector_RecoveryCount", (double)RecoveryCount);
+   GlobalVariableSet("Protector_MaxPositions", (double)MaxHistoricPositions);
    GlobalVariableSet("Protector_MaxLoss", MaxHistoricLoss);
    GlobalVariableSet("Protector_MaxSpread", MaxHistoricSpread);
-   GlobalVariableSet("Protector_MaxDrawdownHistoric", MaxDrawdownHistoric);
-   GlobalVariableSet("Protector_BalanceAtMaxDrawdown", BalanceAtMaxDrawdown);
-   GlobalVariableSet("Protector_LoteMaxAtMaxDrawdown", LoteMaxAtMaxDrawdown);
-
+   
+   GlobalVariableSet("Protector_MaxDistancia", MaxDistanciaHistorica);
+   
    if(ModoProteccionActivado)
    {
-      GlobalVariableSet("Protector_EpisodioDireccion", EpisodioDireccion);
+      GlobalVariableSet("Protector_EpisodioDireccion", (double)EpisodioDireccion);
       GlobalVariableSet("Protector_EpisodioLoteBase", EpisodioLoteBase);
       GlobalVariableSet("Protector_EpisodioUltimoEscalon", EpisodioUltimoEscalon);
       GlobalVariableSet("Protector_EpisodioPisoActual", EpisodioPisoActual);
-      GlobalVariableSet("Protector_EpisodioInicio", EpisodioInicio);
-      
-      // ✅ GUARDAR CONTEO DE SERIE
-      GlobalVariableSet("Protector_ConteoSerie", ConteoOrdenesSerie);
+      GlobalVariableSet("Protector_EpisodioInicio", (double)EpisodioInicio);
+      GlobalVariableSet("Protector_ConteoSerie", (double)ConteoOrdenesSerie);
+   }
+   else
+   {
+      GlobalVariableSet("Protector_EpisodioDireccion", -1.0);
+      GlobalVariableSet("Protector_ConteoSerie", 0.0);
    }
    
-   GlobalVariableSet("Protector_DireccionDetectada", DireccionDetectada);
-   GlobalVariableSet("Protector_TiempoDeteccion", TiempoDeteccion);
+   GlobalVariableSet("Protector_DireccionDetectada", (double)DireccionDetectada);
+   GlobalVariableSet("Protector_TiempoDeteccion", (double)TiempoDeteccion);
 }
 
 //+------------------------------------------------------------------+
@@ -1367,18 +1348,19 @@ double GetSpreadForXAUUSD()
 //+------------------------------------------------------------------+
 void DeleteMonitoringPanel()
 {
+   // Lista de nombres de objetos a eliminar
    string obj_names[] = {
       "PanelBG", "LblPositions", "LblLoss", "LblMaxLoss", 
       "LblRecoveries", "LblSpread", "LblMaxSpread", 
-      "LblPeorEscenario", "LblEstado", "LblSpreadSet", 
-      "LblMargen", "LblBalance"
+      "LblPeorEscenario", "LblMaxDistancia", "LblEstado", 
+      "LblSpreadSet", "LblMargen", "LblBalance"
    };
-   
-   // Eliminar objetos de TODOS los gráficos
+
+   // 1. Eliminar objetos de TODOS los gráficos abiertos
    long chartId = ChartFirst();
    int chartCount = 0;
    
-   while(chartId >= 0 && chartCount < 100) // Contador de seguridad
+   while(chartId >= 0 && chartCount < 100) 
    {
       for(int i = 0; i < ArraySize(obj_names); i++)
       {
@@ -1389,7 +1371,7 @@ void DeleteMonitoringPanel()
       chartCount++;
    }
    
-   // Eliminar también del gráfico actual (por si acaso)
+   // 2. Limpieza final en el gráfico actual
    for(int i = 0; i < ArraySize(obj_names); i++)
    {
       ObjectDelete(0, obj_names[i]);
@@ -1399,33 +1381,43 @@ void DeleteMonitoringPanel()
 //+------------------------------------------------------------------+
 //| Crear panel de monitoreo visual (ACTUALIZADA)                   |
 //+------------------------------------------------------------------+
+
 void CreateMonitoringPanel()
 {
    int x = 100;
    int y = 20;
-   int spacing = 25;
+   int spacing = 22; // Espaciado ligeramente reducido para optimizar espacio
    
    long chartId = ChartFirst();
    while(chartId >= 0) {
-      // Fondo del panel
+      // 1. Fondo del panel
       ObjectCreate(chartId, "PanelBG", OBJ_RECTANGLE_LABEL, 0, 0, 0);
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_XDISTANCE, x - 10);
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_YDISTANCE, y - 5);
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_XSIZE, 300);
-      ObjectSetInteger(chartId, "PanelBG", OBJPROP_YSIZE, 225);
-      ObjectSetInteger(chartId, "PanelBG", OBJPROP_BGCOLOR, PANEL_BG);
+      ObjectSetInteger(chartId, "PanelBG", OBJPROP_YSIZE, 240); // Aumentado para nueva línea 
+      ObjectSetInteger(chartId, "PanelBG", OBJPROP_BGCOLOR, PANEL_BG); 
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_BACK, true);
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_SELECTABLE, false);
+
+      // 2. Etiquetas de Monitoreo Estándar
+      CreateChartLabel(chartId, "LblPositions", "Posiciones: ", x, y, COLOR_POSITIONS); 
+      CreateChartLabel(chartId, "LblLoss", "Pérdida: ", x, y + spacing, COLOR_LOSS); 
+      CreateChartLabel(chartId, "LblMaxLoss", "Pérdida Máx: ", x, y + spacing*2, COLOR_MAX_VALUES); 
+      CreateChartLabel(chartId, "LblRecoveries", "Recuperaciones: ", x, y + spacing*3, COLOR_RECOVERY); 
       
-      // Etiquetas - CON NOMBRES ÚNICOS
-      CreateChartLabel(chartId, "LblPositions", "Posiciones: ", x, y, COLOR_POSITIONS);
-      CreateChartLabel(chartId, "LblLoss", "Pérdida: ", x, y + spacing, COLOR_LOSS);
-      CreateChartLabel(chartId, "LblMaxLoss", "Pérdida Máx: ", x, y + spacing*2, COLOR_MAX_VALUES);
-      CreateChartLabel(chartId, "LblRecoveries", "Recuperaciones: ", x, y + spacing*3, COLOR_RECOVERY);
-      CreateChartLabel(chartId, "LblSpread", "Spread Actual: ", x, y + spacing*4, COLOR_SPREAD);
-      CreateChartLabel(chartId, "LblMaxSpread", "Spread Máx Hist: ", x, y + spacing*5, COLOR_MAX_VALUES);
-      CreateChartLabel(chartId, "LblPeorEscenario", "Peor Escenario: ", x, y + spacing*6, COLOR_SPREAD);
-      CreateChartLabel(chartId, "LblEstado", "Estado: ", x, y + spacing*7, COLOR_MARGEN);
+      // 3. Etiquetas de Spread
+      CreateChartLabel(chartId, "LblSpread", "Spread Actual: ", x, y + spacing*4, COLOR_SPREAD); 
+      CreateChartLabel(chartId, "LblMaxSpread", "Spread Máx Hist: ", x, y + spacing*5, COLOR_MAX_VALUES); 
+      
+      // 4. NUEVA SECCIÓN: Distancia entre Extremos (Color Cyan)
+      // Línea de Distancia Actual
+      CreateChartLabel(chartId, "LblPeorEscenario", "Distancia Ext: ", x, y + spacing*6, COLOR_SPREAD);
+      // Línea de Máximo Histórico de Distancia
+      CreateChartLabel(chartId, "LblMaxDistancia", "Max Distancia: ", x, y + spacing*7, COLOR_MAX_VALUES);
+      
+      // 5. Estado del Sistema
+      CreateChartLabel(chartId, "LblEstado", "Estado: ", x, y + spacing*8, COLOR_MARGEN);
       
       chartId = ChartNext(chartId);
    }
@@ -1476,9 +1468,11 @@ void UpdateAllChartsPanels(double equityPercent, double spread)
 //+------------------------------------------------------------------+
 void UpdateMonitoringPanel(double equityPercent, double spread, long chartId)
 {
+   // 1. Cálculos de Ganancia/Pérdida de la cuenta
    double diferenciaPercent = equityPercent - 100.0;
    string lossGainText;
    color lossGainColor;
+
    if(diferenciaPercent >= 0) {
       lossGainText = StringFormat("Ganancia: +%.2f%%", diferenciaPercent);
       lossGainColor = COLOR_POSITIONS;
@@ -1487,33 +1481,46 @@ void UpdateMonitoringPanel(double equityPercent, double spread, long chartId)
       lossGainColor = COLOR_LOSS;
    }
    
-   // ✅ MODIFICADO: Muestra CurrentPrincipalPositions (EA Principal)
-   UpdateChartLabel(chartId, "LblPositions", 
-                   "Posiciones: " + IntegerToString(CurrentPrincipalPositions) + " | Máx: " + IntegerToString(MaxHistoricPositions));
-                   
-   UpdateChartLabel(chartId, "LblLoss", lossGainText, lossGainColor);
-   UpdateChartLabel(chartId, "LblMaxLoss", "Pérdida Máx Hist: " + DoubleToString(MaxHistoricLoss, 2) + "%");
-   UpdateChartLabel(chartId, "LblSpread", "Spread: " + DoubleToString(spread, 1));
-   UpdateChartLabel(chartId, "LblMaxSpread", "Máx Spread: " + DoubleToString(MaxHistoricSpread, 1));
-   UpdateChartLabel(chartId, "LblRecoveries", "Recuperaciones: " + IntegerToString(RecoveryCount));
-   UpdateChartLabel(chartId, "LblPeorEscenario", StringFormat("Drawdown Hist: %.1f%%", MaxDrawdownHistoric), COLOR_SPREAD);
+   // 2. Actualización de Etiquetas Estándar
+   // Muestra posiciones actuales del EA Principal y su máximo histórico
+   UpdateChartLabel(chartId, "LblPositions", "Posiciones: " + IntegerToString(CurrentPrincipalPositions) + " | Máx: " + IntegerToString(MaxHistoricPositions)); 
    
+   UpdateChartLabel(chartId, "LblLoss", lossGainText, lossGainColor); 
+   
+   UpdateChartLabel(chartId, "LblMaxLoss", "Pérdida Máx Hist: " + DoubleToString(MaxHistoricLoss, 2) + "%"); 
+   
+   UpdateChartLabel(chartId, "LblSpread", "Spread: " + DoubleToString(spread, 1)); 
+
+   UpdateChartLabel(chartId, "LblMaxSpread", "Máx Spread: " + DoubleToString(MaxHistoricSpread, 1));
+   
+   UpdateChartLabel(chartId, "LblRecoveries", "Recuperaciones: " + IntegerToString(RecoveryCount)); 
+
+   // 3. NUEVA SECCIÓN: Distancia entre Extremos (Sustituye Peor Escenario/Drawdown)
+   // Línea 1: Distancia Actual en Cyan
+   UpdateChartLabel(chartId, "LblPeorEscenario", StringFormat("Distancia Ext: %.2f%%", DistanciaExtremosActual), COLOR_SPREAD); 
+   
+   // Línea 2: Máximo Histórico de Distancia en Cyan
+   UpdateChartLabel(chartId, "LblMaxDistancia", StringFormat("Max Distancia: %.2f%%", MaxDistanciaHistorica), COLOR_MAX_VALUES);
+
+   // 4. Lógica de Estado del Sistema
    string estadoText;
    color estadoColor;
-   if(ModoProteccionActivado) {
-      double pisoLoss = 100.0 - PisoActual;
+
+   if(ModoProteccionActivado) { 
+      double pisoLoss = 100.0 - PisoActual; 
       estadoText = "PROTECCIÓN ACTIVO: "+ DoubleToString(pisoLoss, 2) + "%";
-      estadoColor = clrRed;
-   } else if(InWaitingState) {
-      int seg = MinDuration * 60 - (int)(TimeCurrent() - TimerStart);
+      estadoColor = clrRed; 
+   } else if(InWaitingState) { 
+      int seg = MinDuration * 60 - (int)(TimeCurrent() - TimerStart); 
       estadoText = "ESPERA: " + IntegerToString(seg) + "s";
-      estadoColor = clrYellow;
+      estadoColor = clrYellow; 
    } else {
-      double lossThreshold = 100.0 - EquityThreshold;
+      double lossThreshold = 100.0 - EquityThreshold; 
       estadoText = "VIGILANCIA: "+ DoubleToString(lossThreshold, 2) + "%";
-      estadoColor = clrWhite;
+      estadoColor = clrWhite; 
    }
-   UpdateChartLabel(chartId, "LblEstado", estadoText, estadoColor);
+   
+   UpdateChartLabel(chartId, "LblEstado", estadoText, estadoColor); 
 }
 
 //+------------------------------------------------------------------+
@@ -1558,28 +1565,22 @@ void SendNotifications(string message)
 //+------------------------------------------------------------------+
 void UpdateHistoricalTrackers(double equityPercent, double spread)
 {
-   double lossPercent = 100.0 - equityPercent;
+   // 1. Calcular pérdida actual basada en el Equity 
+   double lossPercent = 100.0 - equityPercent; 
    
-   // ✅ AHORA USA CurrentPrincipalPositions EN LUGAR DE GLOBAL
-   // Registra el máximo de posiciones DEL EA PRINCIPAL
+   // 2. Registrar el máximo de posiciones abiertas por el EA PRINCIPAL 
    if(CurrentPrincipalPositions > MaxHistoricPositions) 
-      MaxHistoricPositions = CurrentPrincipalPositions;
+      MaxHistoricPositions = CurrentPrincipalPositions; 
       
-   if(lossPercent > MaxHistoricLoss) MaxHistoricLoss = lossPercent;
-   if(spread > MaxHistoricSpread) MaxHistoricSpread = spread;
-   
-   double drawdownActual = 100.0 - equityPercent;
-   if(drawdownActual > MaxDrawdownHistoric)
-   {
-      MaxDrawdownHistoric = drawdownActual;
-      BalanceAtMaxDrawdown = AccountBalance();
-      double marginRequired = MarketInfo(TradingSymbol, MODE_MARGINREQUIRED);
-      if(marginRequired > 0)
-      {
-         LoteMaxAtMaxDrawdown = (BalanceAtMaxDrawdown * MaxDrawdownHistoric / 100.0) / marginRequired;
-         LoteMaxAtMaxDrawdown = MathMin(LoteMaxAtMaxDrawdown, LoteMaximo);
-         LoteMaxAtMaxDrawdown = MathMax(LoteMaxAtMaxDrawdown, LoteMinimo);
-         LoteMaxAtMaxDrawdown = NormalizeDouble(LoteMaxAtMaxDrawdown, 2);
-      }
-   }
+   // 3. Registrar el récord de pérdida (Drawdown de Equity) 
+   if(lossPercent > MaxHistoricLoss) 
+      MaxHistoricLoss = lossPercent; 
+      
+   // 4. Registrar el Spread máximo detectado 
+   if(spread > MaxHistoricSpread) 
+      MaxHistoricSpread = spread;
+
+   // 5. Calcular la distancia entre extremos de la malla (Grid)
+   // Esto actualiza DistanciaExtremosActual y MaxDistanciaHistorica para el monitor
+   CalcularDistanciaOperativa();
 }
