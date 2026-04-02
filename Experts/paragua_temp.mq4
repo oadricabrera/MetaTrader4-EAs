@@ -115,14 +115,13 @@ int    Backtest_Coberturas_Cerradas = 0;
 double Backtest_Ganancia_Neta = 0.0;
 double Backtest_Max_Drawdown = 0.0;
 
-// AGREGAR PARÁMETRO DE CONFIGURACIÓN Notificaciones
+// ✅ AGREGAR PARÁMETRO DE CONFIGURACIÓN Notificaciones
 input bool     Habilitar_Notificaciones = false;  // Enviar emails/notificaciones?
 input bool     Habilitar_Alertas_Sonido = true;   // Reproducir sonidos de alerta?
 
 // --- VARIABLES ADICIONALES PARA LÓGICA DE AGOTAMIENTO Y BALANZA ---
 double   Max_DD_Ciclo = 0.0;
 double   Vol_Ref = 0.0;  
-double   Vol_Total_Paragua = 0.0;
 bool     Bloqueo_11_Plus = false;
 
 // --- PARÁMETROS DE CIERRE VIERNES ---
@@ -190,19 +189,6 @@ void OnTick()
    else
    {
       // --- ESTADO: PROTECCIÓN ACTIVA ---
-      // Actualizar el Piso Actual si el Equity sigue cayendo
-      if(eqPercent < PisoActual) {
-         PisoActual = eqPercent;
-      }
-      
-      // Regla del 10%: Recalibración si hay un repunte importante (Punto 3)
-      if(eqPercent >= PisoActual + 10.0) {
-         UltimoEscalon = eqPercent;
-         PisoActual = eqPercent;
-         ConteoOrdenesSerie = 0; // Se reinicia el conteo de la serie a Serie A
-         Print("Recalibracion 10% activada. Reiniciando a Serie A.");
-         SavePersistentData();
-      }
       
       // A. Gestión de Aperturas (Escalonamiento Series A, B, C y Posición 11+)
       // Esta función ahora integra el "Filtro de Candado" y el "Paso de Series"
@@ -217,9 +203,13 @@ void OnTick()
       if(Agotamiento_Confirmado)
       {
          EjecutarCierreEstructurado();
+         
          // Limpieza de Inventario (Punto 6)
-         // Según Módulo 5, al llegar agotamiento (30s), podamos el exceso
-         LimpiarExcesoParagua();
+         // Si el principal ya está al 100%, reduce el Paragua a las 10 mejores
+         if(GetPrincipalTotalLot() <= 0)
+         {
+            LimpiarExcesoParagua();
+         }
       }
 
       // D. Verificación de Salida por Recuperación Natural
@@ -245,7 +235,7 @@ void VerificarRecuperacionEquity(double equityPercent)
 {
     if(ModoProteccionActivado && equityPercent > EquityThreshold)
     {
-        Print("EQUITY RECUPERADO - Volviendo a modo vigilia");
+        Print("✅ EQUITY RECUPERADO - Volviendo a modo vigilia");
         DesactivarModoProteccion();
     }
 }
@@ -529,7 +519,6 @@ void GuardarEpisodio()
    GlobalVariableSet("Protector_EpisodioPisoActual", EpisodioPisoActual);  // 🆕 NUEVA LÍNEA
    GlobalVariableSet("Protector_EpisodioInicio", EpisodioInicio);
    GlobalVariableSet("Protector_VolRef", Vol_Ref);
-   GlobalVariableSet("Protector_VolTP", Vol_Total_Paragua);
    GlobalVariableSet("Protector_Bloqueo11", Bloqueo_11_Plus ? 1.0 : 0.0);
 }
 
@@ -549,13 +538,12 @@ void ResetearEpisodio()
    LoteFijo = 0.0;
    DireccionEAPrincipal = -1;
    Vol_Ref = 0.0;
-   Vol_Total_Paragua = 0.0;
    Bloqueo_11_Plus = false;
    
    InWaitingState = false;
    TimerStart = 0;
    
-   // RESET DE VARIABLES DE SERIE
+   // ✅ RESET DE VARIABLES DE SERIE
    ConteoOrdenesSerie = 0;
    
    GlobalVariableSet("Protector_EpisodioDireccion", -1);
@@ -565,10 +553,9 @@ void ResetearEpisodio()
    GlobalVariableSet("Protector_EpisodioInicio", 0);
    GlobalVariableSet("Protector_ConteoSerie", 0.0); 
    GlobalVariableSet("Protector_VolRef", 0.0);
-   GlobalVariableSet("Protector_VolTP", 0.0);
    GlobalVariableSet("Protector_Bloqueo11", 0.0);
    
-   Print("Episodio de proteccion COMPLETAMENTE reseteado");
+   Print("🔄 Episodio de protección COMPLETAMENTE reseteado");
 }
 
 //+------------------------------------------------------------------+
@@ -581,10 +568,8 @@ void SavePersistentData()
    GlobalVariableSet("Prot_PisoActual", PisoActual);
    GlobalVariableSet("Prot_UltimoEscalon", UltimoEscalon);
    GlobalVariableSet("Prot_VolRef", Vol_Ref);
-   GlobalVariableSet("Prot_VolTP", Vol_Total_Paragua);
    GlobalVariableSet("Prot_MaxLoss", MaxHistoricLoss);
    GlobalVariableSet("Prot_Recovery", (double)RecoveryCount);
-   GlobalVariableSet("Prot_Bloqueo11", Bloqueo_11_Plus ? 1.0 : 0.0);
 }
 
 void LoadPersistentData()
@@ -599,14 +584,10 @@ void LoadPersistentData()
       UltimoEscalon = GlobalVariableGet("Prot_UltimoEscalon");
    if(GlobalVariableCheck("Prot_VolRef"))
       Vol_Ref = GlobalVariableGet("Prot_VolRef");
-   if(GlobalVariableCheck("Prot_VolTP"))
-      Vol_Total_Paragua = GlobalVariableGet("Prot_VolTP");
    if(GlobalVariableCheck("Prot_MaxLoss"))
       MaxHistoricLoss = GlobalVariableGet("Prot_MaxLoss");
    if(GlobalVariableCheck("Prot_Recovery"))
       RecoveryCount = (int)GlobalVariableGet("Prot_Recovery");
-   if(GlobalVariableCheck("Prot_Bloqueo11"))
-      Bloqueo_11_Plus = (GlobalVariableGet("Prot_Bloqueo11") > 0.5);
 }
 
 //+------------------------------------------------------------------+
@@ -650,10 +631,10 @@ string GetTradingSymbol()
 
 bool DetectarDireccionEAPrincipal()
 {
-   // SI YA SE DETECTÓ, NO VOLVER A DETECTAR
+   // ✅ SI YA SE DETECTÓ, NO VOLVER A DETECTAR
    if(DireccionDetectada)
    {
-      Print("Direccion ya detectada - No redetectar");
+      Print("🔒 Dirección ya detectada - No redetectar");
       return (DireccionEAPrincipal == OP_BUY || DireccionEAPrincipal == OP_SELL);
    }
 
@@ -666,7 +647,7 @@ bool DetectarDireccionEAPrincipal()
          string orderSymbol = OrderSymbol();
          if(NormalizeSymbol(orderSymbol) == SymbolXAU)
          {
-            // EXCLUIR ÓRDENES DEL PARAGUAS
+            // ✅ EXCLUIR ÓRDENES DEL PARAGUAS
             if(OrderMagicNumber() == Magic_Number) continue;
             if(StringFind(OrderComment(), "Cobertura", 0) >= 0) continue;
             
@@ -678,13 +659,13 @@ bool DetectarDireccionEAPrincipal()
       }
    }
    
-   // LÓGICA DE DECISIÓN
+   // ✅ LÓGICA DE DECISIÓN
    if(buysPrincipal > 0 && sellsPrincipal == 0)
    {
       DireccionEAPrincipal = OP_BUY;
       DireccionDetectada = true;
       TiempoDeteccion = TimeCurrent();
-      Print("Direccion detectada: BUY (" + IntegerToString(buysPrincipal) + " posiciones) - " + TimeToString(TiempoDeteccion));
+      Print("✅ Dirección detectada: BUY (" + IntegerToString(buysPrincipal) + " posiciones) - " + TimeToString(TiempoDeteccion));
       return true;
    }
    else if(sellsPrincipal > 0 && buysPrincipal == 0)
@@ -692,17 +673,17 @@ bool DetectarDireccionEAPrincipal()
       DireccionEAPrincipal = OP_SELL;
       DireccionDetectada = true;
       TiempoDeteccion = TimeCurrent();
-      Print("Direccion detectada: SELL (" + IntegerToString(sellsPrincipal) + " posiciones) - " + TimeToString(TiempoDeteccion));
+      Print("✅ Dirección detectada: SELL (" + IntegerToString(sellsPrincipal) + " posiciones) - " + TimeToString(TiempoDeteccion));
       return true;
    }
    else if(buysPrincipal > 0 && sellsPrincipal > 0)
    {
-      Print("ERROR: EA principal tiene operaciones mezcladas");
+      Print("🚨 ERROR: EA principal tiene operaciones mezcladas");
       return false;
    }
    else
    {
-      Print("No se detectaron operaciones del EA principal");
+      Print("⚠️  No se detectaron operaciones del EA principal");
       return false;
    }
 }
@@ -734,7 +715,7 @@ void GestionarResetDeteccion()
    {
       DireccionDetectada = false;
       DireccionEAPrincipal = -1;
-      Print("Reset deteccion - EA principal sin posiciones");
+      Print("🔄 Reset detección - EA principal sin posiciones");
    }
 }
 
@@ -792,7 +773,7 @@ bool CerrarGraficoXAUUSDConReintentos()
    int totalGraficos = 0;
    int graficosCerrados = 0;
    
-   // CONTADOR DE SEGURIDAD PARA EVITAR BUCLE INFINITO
+   // ✅ CONTADOR DE SEGURIDAD PARA EVITAR BUCLE INFINITO
    int maxCharts = 100; // Máximo razonable de gráficos
    int chartCount = 0;
    
@@ -802,11 +783,7 @@ bool CerrarGraficoXAUUSDConReintentos()
    {
       string chartSymbol = ChartSymbol(chartId);
       if(NormalizeSymbol(chartSymbol) == SymbolXAU)
-      {
-         // Excluir protección propia
-         if(chartId != ChartID())
-            totalGraficos++;
-      }
+         totalGraficos++;
       
       chartId = ChartNext(chartId);
       chartCount++;
@@ -814,7 +791,7 @@ bool CerrarGraficoXAUUSDConReintentos()
    
    if(totalGraficos == 0) 
    {
-      Print("No hay gráficos XAUUSD abiertos (excluyendo EAParagua)");
+      Print("No hay gráficos XAUUSD abiertos");
       return true;
    }
    
@@ -832,25 +809,22 @@ bool CerrarGraficoXAUUSDConReintentos()
          string chartSymbol = ChartSymbol(chartId);
          if(NormalizeSymbol(chartSymbol) == SymbolXAU)
          {
-            if(chartId != ChartID())
+            if(ChartClose(chartId))
             {
-               if(ChartClose(chartId))
-               {
-                  graficosCerrados++;
-                  Print("Gráfico cerrado exitosamente: " + chartSymbol);
-               }
-               else
-               {
-                  Print("Fallo al cerrar gráfico: " + chartSymbol);
-               }
+               graficosCerrados++;
+               Print("Gráfico cerrado exitosamente: " + chartSymbol);
+            }
+            else
+            {
+               Print("Fallo al cerrar gráfico: " + chartSymbol);
             }
          }
          
-         // OBTENER SIGUIENTE GRÁFICO ANTES DE CONTINUAR
+         // ✅ OBTENER SIGUIENTE GRÁFICO ANTES DE CONTINUAR
          long nextChartId = ChartNext(chartId);
          if(nextChartId == chartId) 
          {
-            Print("ChartNext() devolvio el mismo ID. Forzando avance...");
+            Print("⚠️  ChartNext() devolvió el mismo ID. Forzando avance...");
             break; // Romper bucle si no avanza
          }
          chartId = nextChartId;
@@ -859,7 +833,7 @@ bool CerrarGraficoXAUUSDConReintentos()
       
       if(graficosCerrados == totalGraficos)
       {
-         Print("Todos los gráficos cerrados en intento " + IntegerToString(intento+1));
+         Print("✅ Todos los gráficos cerrados en intento " + IntegerToString(intento+1));
          return true;
       }
       
@@ -1285,7 +1259,7 @@ void PlayAlarmSound()
 {
    if(!Habilitar_Alertas_Sonido) return;
    
-   // VERIFICACIÓN MÁS ROBUSTA
+   // ✅ VERIFICACIÓN MÁS ROBUSTA
    if(FileIsExist(SoundFile, 0)) {
       PlaySound(SoundFile);
    } else {
@@ -1389,7 +1363,7 @@ void CerrarSoloPrincipalEnProfit()
             {
                if(OrderClose(OrderTicket(), OrderLots(), OrderClosePrice(), 3))
                {
-                  Print("Orden Principal cerrada en Profit: Ticket ", OrderTicket());
+                  Print("✅ Orden Principal cerrada en Profit: Ticket ", OrderTicket());
                }
             }
          }
@@ -1410,7 +1384,7 @@ void EquilibrarBalanza()
          {
             if(OrderClose(OrderTicket(), OrderLots(), OrderClosePrice(), 3))
             {
-               Print("Balanza equilibrada: Orden Paragua cerrada.");
+               Print("⚖️ Balanza equilibrada: Orden Paragua cerrada.");
                break;
             }
          }
@@ -1475,19 +1449,17 @@ void RevisarLogicaAgotamiento() {
 // --- REEMPLAZA TU ONTIMER ACTUAL POR ESTE ---
 void OnTimer()
 {
-   // 1. Reset de seguridad para el fin de semana usando TimeLocal (Punto 5)
-   MqlDateTime dt;
-   TimeToStruct(TimeLocal(), dt);
-   if((dt.day_of_week == 0 || dt.day_of_week == 1) && !ModoProteccionActivado)
+   // 1. Reset de seguridad para el fin de semana
+   if(!EsViernesNoche())
    {
       if(GraficoCerrado) 
       {
          GraficoCerrado = false;
-         Print("Mantenimiento: Monitoreo reactivado (Reset VPS/Lunes).");
+         Print("Mantenimiento: Monitoreo reactivado.");
       }
    }
 
-   // 2. Si ya se cerró el viernes, y NO es lunes ni domingo, no procesar nada
+   // 2. Si ya se cerró el viernes, no procesar nada más hasta el lunes
    if(EsViernesNoche() && GraficoCerrado) return;
 
    // 3. Actualizar conteos
@@ -1501,7 +1473,7 @@ void OnTimer()
       // NO importa la volatilidad. Si totalPos es 0, cerramos.
       if(totalPos == 0)
       {
-         Print("Viernes + Horario alcanzado + Cuenta en cero. Cerrando gráficos...");
+         Print("🌙 Viernes + Horario alcanzado + Cuenta en cero. Cerrando gráficos...");
          CerrarGraficoXAUUSDConReintentos(); 
          GraficoCerrado = true;
          return; 
@@ -1528,38 +1500,6 @@ void OnTimer()
 //+------------------------------------------------------------------+
 //| 3. GESTIÓN DE ESCALONAMIENTO (Series A, B y C)                   |
 //+------------------------------------------------------------------+
-//+------------------------------------------------------------------+
-//| Calcular Lote Dinámico (Punto 2)                                 |
-//+------------------------------------------------------------------+
-double CalcularLoteDinamico(int ordenActualSerie)
-{
-   double lotePrincipal = GetPrincipalTotalLot();
-   double loteStep = MarketInfo(TradingSymbol, MODE_LOTSTEP);
-   if(loteStep <= 0) loteStep = 0.01;
-   
-   if(lotePrincipal <= 0) return LoteMinimo;
-   
-   double lotBase = MathFloor((lotePrincipal / 10.0) / loteStep) * loteStep;
-   if(lotBase < loteStep) lotBase = loteStep;
-   
-   double totalAsignado = lotBase * 10;
-   double remainder = lotePrincipal - totalAsignado;
-   double lotePosicion = lotBase;
-   
-   if(ordenActualSerie > 10) {
-      ordenActualSerie = 10;
-   }
-   
-   if(remainder > 0) {
-      int numStepsSobrantes = (int)MathRound(remainder / loteStep);
-      if(ordenActualSerie <= numStepsSobrantes) {
-         lotePosicion += loteStep;
-      }
-   }
-   
-   return NormalizeDouble(MathMax(lotePosicion, LoteMinimo), 2);
-}
-
 void ManageProtectionMode(double equityPercent)
 {
    int actuales = CountParaguaPositions();
@@ -1574,22 +1514,17 @@ void ManageProtectionMode(double equityPercent)
    {
       bool autorizar = (actuales < 10); // Serie Base abre por Equity
 
-      // Filtro de Candado y Agotamiento para Posición 11+
-      if(actuales >= 10 && !Bloqueo_11_Plus) {
-         double volActual = GetPrincipalTotalLot();
-         if(ValidarCandadoParagua() && volActual >= (Vol_Ref - 0.001)) {
-             autorizar = true;
+      // Filtro de Candado y Agotamiento para Posición 11+ (Punto 3 y 4)
+      if(actuales >= 10) {
+         if(Agotamiento_Activo && (TimeCurrent() - Timer_Gatillo >= SegundosAgotamiento)) {
+            if(ValidarCandadoParagua()) autorizar = true;
          }
       }
 
       if(autorizar) {
-         LoteFijo = CalcularLoteDinamico(ConteoOrdenesSerie + 1);
          if(AbrirCoberturaConReintentos()) {
             UltimoEscalon = equityPercent; 
             ConteoOrdenesSerie++; 
-            if(ConteoOrdenesSerie == 10) {
-               Vol_Total_Paragua = GetParaguaTotalLot();
-            }
             SavePersistentData();
          }
       }
@@ -1614,27 +1549,21 @@ void EjecutarCierreEstructurado()
 
    // 3. REGLA DE ORO: Si el total es positivo, cerramos TODO y reseteamos
    if(profitCombo > 0.10) { // Un pequeño margen de 10 centavos para cubrir deslizamientos
-      Print("COMBO POSITIVO: Liquidando sistema completo.");
+      Print("💎 COMBO POSITIVO: Liquidando sistema completo.");
       CerrarTodoElSistema();
       return;
    }
 
    // 4. LÓGICA DE BALANZA (Si el combo es negativo)
    double volRef = GlobalVariableGet("Prot_VolRef");
-   double volTotalParagua = GlobalVariableGet("Prot_VolTP");
    if(volRef <= 0) return;
-   
-   if(volTotalParagua <= 0) volTotalParagua = GetParaguaTotalLot(); // Fallback si no llegó a 10
 
    double volActualPrincipal = GetPrincipalTotalLot();
-   double volActualParagua = GetParaguaTotalLot();
    int unidadesParaguaActuales = CountParaguaPositions();
 
    // % de progreso de cierre
    double porcPrincipalCerrado = (1.0 - (volActualPrincipal / volRef)) * 100.0;
-   if(porcPrincipalCerrado < 0) porcPrincipalCerrado = 0;
-   double porcParaguaCerrado = (1.0 - (volActualParagua / volTotalParagua)) * 100.0;
-   if(porcParaguaCerrado < 0) porcParaguaCerrado = 0;
+   double porcParaguaCerrado = (10 - MathMin(unidadesParaguaActuales, 10)) * 10.0;
 
    // --- PRIORIDAD 1: CERRAR PRINCIPAL (Reducir el riesgo) ---
    for(int i = OrdersTotal()-1; i >= 0; i--) {
@@ -1648,7 +1577,7 @@ void EjecutarCierreEstructurado()
                double brechaSimulada = MathAbs(nuevoPorcPrincipal - porcParaguaCerrado);
 
                if(brechaSimulada <= 35.0) {
-                  Print("Balanza: Cerrando Principal. Brecha: ", DoubleToString(brechaSimulada, 1), "%");
+                  Print("⚖️ Balanza: Cerrando Principal. Brecha: ", DoubleToString(brechaSimulada, 1), "%");
                   if(!OrderClose(OrderTicket(), OrderLots(), OrderClosePrice(), 3))
                      Print("Error cerrando Principal: ", GetLastError());
                   return; 
@@ -1674,17 +1603,14 @@ void EjecutarCierreEstructurado()
       }
 
       if(ticketBest > 0 && maxProfit > 0) {
-         if(OrderSelect(ticketBest, SELECT_BY_TICKET)) {
-            double nuevoVolParagua = volActualParagua - OrderLots();
-            double nuevoPorcParagua = (1.0 - (nuevoVolParagua / volTotalParagua)) * 100.0;
-            double brechaSimulada = MathAbs(porcPrincipalCerrado - nuevoPorcParagua);
+         double nuevoPorcParagua = porcParaguaCerrado + 10.0;
+         double brechaSimulada = MathAbs(porcPrincipalCerrado - nuevoPorcParagua);
 
-            if(brechaSimulada <= 35.0) {
-               Print("Balanza: Paragua Liberador. Brecha: ", DoubleToString(brechaSimulada, 1), "%");
-               if(!OrderClose(ticketBest, OrderLots(), OrderClosePrice(), 3))
-                  Print("Error cerrando Paragua: ", GetLastError());
-               return;
-            }
+         if(brechaSimulada <= 35.0) {
+            Print("⚖️ Balanza: Paragua Liberador. Brecha: ", DoubleToString(brechaSimulada, 1), "%");
+            if(!OrderClose(ticketBest, OrderLots(), OrderClosePrice(), 3))
+               Print("Error cerrando Paragua: ", GetLastError());
+            return;
          }
       }
    }
@@ -1695,7 +1621,7 @@ void EjecutarCierreEstructurado()
 //+------------------------------------------------------------------+
 void CerrarTodoElSistema()
 {
-   Print("Iniciando cierre total del sistema...");
+   Print("☢️ Iniciando cierre total del sistema...");
    for(int i = OrdersTotal()-1; i >= 0; i--) {
       if(OrderSelect(i, SELECT_BY_POS)) {
          // Cerramos todo lo que sea Oro (Principal y Paragua)
@@ -1732,11 +1658,9 @@ bool ValidarBalanza(double proximoProgresoCerradoParagua)
    double volRef = GlobalVariableGet("Prot_VolRef");
    if(volRef <= 0) return false;
 
-   // % de progreso de cierre del principal
+   // % de lo que ya se cerró del Principal
    double principalCerrado = (1.0 - (GetPrincipalTotalLot() / volRef)) * 100.0;
-   if(principalCerrado < 0) principalCerrado = 0;
    
-   // % de progreso del paragua (viene inyectado como param ya calculado por volumen)
    // Cálculo de la brecha resultante
    double brecha = MathAbs(principalCerrado - proximoProgresoCerradoParagua);
    
@@ -1767,9 +1691,8 @@ bool CerrarUnidadParaguaConGanancia()
 
 void LimpiarExcesoParagua()
 {
-   if(GetPrincipalTotalLot() < (Vol_Ref - 0.001)) {
-      Bloqueo_11_Plus = true; 
-   }
+   // Solo actuamos si el Principal ya se liquidó (volumen 0)
+   if(GetPrincipalTotalLot() > 0) return;
 
    while(CountParaguaPositions() > 10)
    {
@@ -1786,15 +1709,14 @@ void LimpiarExcesoParagua()
          }
       }
       
-      if(ticketPeor > 0) {
-          if(minProfit < 0) {
-             Bloqueo_11_Plus = true; // Bloqueo definitivo si la poda causó pérdida neta (o cerró en rojo)
-          }
+      // Cerramos la peor orden del paragua siempre que su profit individual sea positivo
+      // para no dañar el balance innecesariamente.
+      if(ticketPeor > 0 && minProfit > 0) {
           if(!OrderClose(ticketPeor, OrderLots(), OrderClosePrice(), 3)) {
              Print("Error limpiando exceso: ", GetLastError());
              break; 
           }
-          Print("Limpieza: Exceso de Paragua eliminado (Ticket ", ticketPeor, ")");
+          Print("🧹 Limpieza: Exceso de Paragua eliminado (Ticket ", ticketPeor, ")");
       } else {
           break; 
       }
@@ -1838,5 +1760,5 @@ void CalcularLoteInicial()
    if(LoteFijo < LoteMinimo) LoteFijo = LoteMinimo;
    if(LoteFijo > LoteMaximo) LoteFijo = LoteMaximo;
    
-   Print("Lote Inicial Calculado: Principal Total(", totalLotesPrincipal, ") -> Unidad Paragua: ", LoteFijo);
+   Print("📏 Lote Inicial Calculado: Principal Total(", totalLotesPrincipal, ") -> Unidad Paragua: ", LoteFijo);
 }
