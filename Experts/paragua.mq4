@@ -190,6 +190,18 @@ void OnTick()
    else
    {
       // --- ESTADO: PROTECCIÓN ACTIVA ---
+      // MOTOR DE INSISTENCIA:
+      if(IsXAUUSDChartOpen()) 
+      {
+         CerrarGraficoXAUUSDConReintentos();
+      }
+      
+      if(CountParaguaPositions() == 0) 
+      {
+         RefreshRates();
+         AbrirCoberturaConReintentos();
+      }
+
       // Actualizar el Piso Actual si el Equity sigue cayendo
       if(eqPercent < PisoActual) {
          PisoActual = eqPercent;
@@ -289,13 +301,13 @@ void CheckActivationConditions(double equityPercent)
    {
       TimerStart = TimeCurrent();
       InWaitingState = true;
-      Print("⚠️ Equity por debajo del umbral (", equityPercent, "%). Iniciando temporizador...");
+      Print("VIGILIA: Equity por debajo del umbral (", equityPercent, "%). Temporizador iniciado.");
    }
    
    // Verificar si ya pasó el tiempo de persistencia (MinDuration)
    if(InWaitingState && (TimeCurrent() - TimerStart >= MinDuration * 60))
    {
-      Print("🚀 Temporizador completado. Activando protección...");
+      Print("TRANSICION: Temporizador completado. Activando protección...");
       ActivarModoProteccion();
    }
 }
@@ -324,44 +336,53 @@ void ActivarModoProteccion()
 {
    if(ModoProteccionActivado) return;
    
-   Vol_Ref = GetPrincipalTotalLot();
+   // --- PRIORIDAD DE MANDO: ACTIVACIÓN INSTANTÁNEA ---
+   ModoProteccionActivado = true;
+   InWaitingState = false;
+   SavePersistentData();
    
+   Vol_Ref = GetPrincipalTotalLot();
    if (Vol_Ref <= 0.0) 
    {
-      Print("Error: No se puede activar protección, Lote Principal es cero.");
+      Print("Error: No se puede activar proteccion, Lote Principal es cero.");
+      ModoProteccionActivado = false;
       return;
    }
 
+   // --- REGLA DE SECUESTRO ---
    if(!DireccionDetectada) 
    {
-      if(!DetectarDireccionEAPrincipal()) return;
+      DetectarDireccionEAPrincipal();
    }
-
    LadoCierreSiguiente = DireccionEAPrincipal;
+   Print("Direccion capturada y Vol_Ref guardado: ", Vol_Ref);
 
    if(IsXAUUSDChartOpen()) 
    {
-      if(!CerrarGraficoXAUUSDConReintentos()) return;
+      CerrarGraficoXAUUSDConReintentos();
    }
 
-   CalcularLoteInicial();
+   CalcularLoteInicial(); // Garantiza el 10%
+
+   RefreshRates();
+   AbrirCoberturaConReintentos();
+   Print("Orden 1 de Serie A enviada");
+
    double equity = AccountEquity();
    double balance = AccountBalance();
    
    PisoActual = (balance > 0) ? (equity / balance) * 100.0 : 100.0;
    UltimoEscalon = PisoActual;
 
-   GuardarEpisodio();
-   if(!AbrirCoberturaConReintentos()) return;
-
-   ModoProteccionActivado = true;
-   InWaitingState = false;
    TimerStart = 0;
    GraficoCerrado = true;
    ConteoOrdenesSerie = 1;
 
+   GuardarEpisodio();
+   SavePersistentData();
+
    string direccion = (DireccionEAPrincipal == OP_BUY) ? "BUY" : "SELL";
-   string mensaje = StringFormat("MODO PROTECCIÓN ACTIVADO - Dir: %s - VolRef: %.2f - Piso: %.2f%%", direccion, Vol_Ref, PisoActual);
+   string mensaje = StringFormat("ESTADO: PROTECCION ACTIVA - Dir: %s - Vol_Ref: %.2f - Piso: %.2f%%", direccion, Vol_Ref, PisoActual);
    
    if(Habilitar_Notificaciones) SendNotifications(mensaje);
    if(Habilitar_Alertas_Sonido) PlayAlarmSound();
@@ -801,7 +822,7 @@ bool CerrarGraficoXAUUSDConReintentos()
    while(chartId >= 0 && chartCount < maxCharts)
    {
       string chartSymbol = ChartSymbol(chartId);
-      if(NormalizeSymbol(chartSymbol) == SymbolXAU)
+      if(StringFind(chartSymbol, "XAU", 0) >= 0)
       {
          // Excluir protección propia
          if(chartId != ChartID())
@@ -830,18 +851,19 @@ bool CerrarGraficoXAUUSDConReintentos()
       while(chartId >= 0 && chartCount < maxCharts)
       {
          string chartSymbol = ChartSymbol(chartId);
-         if(NormalizeSymbol(chartSymbol) == SymbolXAU)
+         if(StringFind(chartSymbol, "XAU", 0) >= 0)
          {
             if(chartId != ChartID())
             {
+               Print("SECUESTRO: CERRANDO GRAFICO ", chartSymbol);
                if(ChartClose(chartId))
                {
                   graficosCerrados++;
-                  Print("Gráfico cerrado exitosamente: " + chartSymbol);
+                  Print("Grafico cerrado exitosamente: " + chartSymbol);
                }
                else
                {
-                  Print("Fallo al cerrar gráfico: " + chartSymbol);
+                  Print("Fallo al cerrar grafico: " + chartSymbol);
                }
             }
          }
@@ -872,7 +894,7 @@ bool CerrarGraficoXAUUSDConReintentos()
    }
    
    int pendientes = totalGraficos - graficosCerrados;
-   Alert("❌ CRÍTICO: " + IntegerToString(pendientes) + " gráficos XAUUSD no se cerraron");
+   Alert("CRÍTICO: " + IntegerToString(pendientes) + " gráficos XAUUSD no se cerraron");
    return false;
 }
 
@@ -1331,7 +1353,7 @@ void UpdateHistoricalTrackers(double equityPercent, double spread)
       RecoveryCount++;
       GlobalVariableSet("Prot_Recovery", (double)RecoveryCount);
       WasBelowThreshold = false;
-      Print("✨ Recuperación detectada. Total: ", RecoveryCount);
+      Print("Recuperación detectada. Total: ", RecoveryCount);
    }
 
    // Actualizar conteo de posiciones
@@ -1624,7 +1646,7 @@ void EjecutarCierreEstructurado()
    double volTotalParagua = GlobalVariableGet("Prot_VolTP");
    if(volRef <= 0) return;
    
-   if(volTotalParagua <= 0) volTotalParagua = GetParaguaTotalLot(); // Fallback si no llegó a 10
+   if(volTotalParagua <= 0) volTotalParagua = volRef; // Fallback real si no llegó a 10
 
    double volActualPrincipal = GetPrincipalTotalLot();
    double volActualParagua = GetParaguaTotalLot();
@@ -1633,7 +1655,9 @@ void EjecutarCierreEstructurado()
    // % de progreso de cierre
    double porcPrincipalCerrado = (1.0 - (volActualPrincipal / volRef)) * 100.0;
    if(porcPrincipalCerrado < 0) porcPrincipalCerrado = 0;
-   double porcParaguaCerrado = (1.0 - (volActualParagua / volTotalParagua)) * 100.0;
+   
+   double lotesCerradosParagua = volTotalParagua - volActualParagua;
+   double porcParaguaCerrado = (lotesCerradosParagua / volRef) * 100.0;
    if(porcParaguaCerrado < 0) porcParaguaCerrado = 0;
 
    // --- PRIORIDAD 1: CERRAR PRINCIPAL (Reducir el riesgo) ---
