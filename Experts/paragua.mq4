@@ -979,6 +979,7 @@ bool AbrirCoberturaConReintentos()
       
       GetLastError(); 
       // Enviamos la orden al TradingSymbol (XAUUSDp) con el precio detectado arriba
+      Print("Intentando abrir cobertura con lote: ", LoteFijo, ", en el precio: ", precio);
       int ticket = OrderSend(TradingSymbol, tipoOrden, loteAjustado, precio, 3, 0, 0, 
                              "Cobertura Protector", Magic_Number, 0, clrGreen);
       
@@ -1844,14 +1845,12 @@ double GetParaguaTotalProfit()
 //+------------------------------------------------------------------+
 void CalcularLoteInicial()
 {
-   // 1. Obtener el volumen total que el EA Principal tiene abierto
-   double totalLotesPrincipal = GetPrincipalTotalLot();
-   
-   // 2. Calcular la unidad base (10% del total para la balanza de 10 posiciones)
-   if(totalLotesPrincipal > 0)
+   // 1. Calcular la unidad base (10% del Vol_Ref para la balanza de 10 posiciones)
+   if(Vol_Ref > 0)
    {
-      // Dividimos por 10 porque el sistema está diseñado para 10 unidades de cobertura
-      LoteFijo = NormalizeDouble(totalLotesPrincipal / 10.0, 2);
+      LoteFijo = Vol_Ref / 10.0;
+      if(LoteFijo < 0.01) LoteFijo = 0.01;
+      LoteFijo = NormalizeDouble(LoteFijo, 2);
    }
    else
    {
@@ -1862,5 +1861,5 @@ void CalcularLoteInicial()
    if(LoteFijo < LoteMinimo) LoteFijo = LoteMinimo;
    if(LoteFijo > LoteMaximo) LoteFijo = LoteMaximo;
    
-   Print("Lote Inicial Calculado: Principal Total(", totalLotesPrincipal, ") -> Unidad Paragua: ", LoteFijo);
+   Print("Lote Inicial Calculado: Vol_Ref Total(", Vol_Ref, ") -> Unidad Paragua: ", LoteFijo);
 }
