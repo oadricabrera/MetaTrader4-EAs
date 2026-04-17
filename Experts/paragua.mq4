@@ -190,16 +190,24 @@ void OnTick()
    else
    {
       // --- ESTADO: PROTECCIÓN ACTIVA ---
+      if(CountParaguaPositions() == 0) 
+      { 
+         if(Vol_Ref <= 0) Vol_Ref = GlobalVariableGet("Prot_VolRef"); 
+         CalcularLoteInicial(); 
+         RefreshRates(); 
+         if(AbrirCoberturaConReintentos()) 
+         { 
+            ConteoOrdenesSerie = 1; 
+            SavePersistentData(); 
+            Print("INSISTENCIA: Primera orden de proteccion colocada con éxito.");
+         } 
+         return; 
+      }
+      
       // MOTOR DE INSISTENCIA:
       if(IsXAUUSDChartOpen()) 
       {
          CerrarGraficoXAUUSDConReintentos();
-      }
-      
-      if(CountParaguaPositions() == 0) 
-      {
-         RefreshRates();
-         AbrirCoberturaConReintentos();
       }
 
       // Actualizar el Piso Actual si el Equity sigue cayendo
