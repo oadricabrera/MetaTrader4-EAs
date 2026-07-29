@@ -13,7 +13,7 @@ bool Agotamiento_Confirmado = false; // Variable para el motor de agotamiento
 int Counter = 0;                    // Contador para optimización de OnTick
 
 // Parámetros configurables
-input double   EquityThreshold = 60.0;    // % de equity sobre balance para activación
+input double   EquityThreshold = 70.0;    // % de equity sobre balance para activación
 input int      MinDuration = 3;           // Minutos de persistencia para activación
 input double   MaxSpread = 25.0;          // Spread máximo en pips para display
 input int      Magic_Number = 3030;       // Magic number para las órdenes del protector
@@ -1273,7 +1273,7 @@ void CreateMonitoringPanel()
 {
    int x = 100;
    int y = 20;
-   int spacing = 22; // Espaciado ligeramente reducido para optimizar espacio
+   int spacing = 53; // Espaciado ligeramente reducido para optimizar espacio
    
    long chartId = ChartFirst();
    while(chartId >= 0) {
@@ -1281,8 +1281,8 @@ void CreateMonitoringPanel()
       ObjectCreate(chartId, "PanelBG", OBJ_RECTANGLE_LABEL, 0, 0, 0);
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_XDISTANCE, x - 10);
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_YDISTANCE, y - 5);
-      ObjectSetInteger(chartId, "PanelBG", OBJPROP_XSIZE, 300);
-      ObjectSetInteger(chartId, "PanelBG", OBJPROP_YSIZE, 240); // Aumentado para nueva línea 
+      ObjectSetInteger(chartId, "PanelBG", OBJPROP_XSIZE, 900);
+      ObjectSetInteger(chartId, "PanelBG", OBJPROP_YSIZE, 500); // Aumentado para nueva línea 
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_BGCOLOR, PANEL_BG); 
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_BACK, true);
       ObjectSetInteger(chartId, "PanelBG", OBJPROP_SELECTABLE, false);
@@ -1363,8 +1363,8 @@ void UpdateMonitoringPanel(double equityPercent, double spread, long chartId)
 
    if(diferenciaPercent >= 0)
    {
-      lossGainText = StringFormat("Ganancia: +%.2f%%", diferenciaPercent);
-      lossGainColor = COLOR_POSITIONS;
+      lossGainText = StringFormat("Ganancia: %.2f%%", diferenciaPercent);
+      lossGainColor = clrDodgerBlue; // Azul vivo (o clrBlue para azul estándar)
    }
    else
    {
